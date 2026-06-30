@@ -46,12 +46,56 @@ function extractFileFromMultipart(buffer, boundary) {
   return firstPart.slice(headerEnd + 4, firstPart.length - 2)
 }
 
+function cleanText(text) {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[^\x20-\x7E\n]/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/^\s+|\s+$/gm, '')
+    .slice(0, 12000)
+    .trim()
+}
+
+function normalizeStatus(status) {
+  if (!status) return 'REVIEW'
+  const upper = status.toUpperCase()
+  if (upper.includes('NO') || upper.includes('REJECT')) return 'NO-GO'
+  if (upper === 'GO' || upper.includes('PROCEED')) return 'GO'
+  return 'REVIEW'
+}
+
+function normalizeDepartments(checklist) {
+  const departments = ['financial', 'legal', 'operations', 'technical']
+  const fallbackItem = {
+    task: 'Manual review required',
+    status: 'REVIEW',
+    reason: 'AI could not extract items for this department — please review manually',
+  }
+  const result = {}
+  for (const dept of departments) {
+    const items = checklist?.[dept]
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      result[dept] = [fallbackItem]
+    } else {
+      result[dept] = items.map(item => ({
+        task: item.task || 'Unknown task',
+        status: normalizeStatus(item.status),
+        reason: item.reason || '',
+      }))
+    }
+  }
+  return result
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
   try {
+    // Step 1: Extract PDF from request
     const rawBody = await getRawBody(req)
     const contentType = req.headers['content-type']
     const boundary = getBoundary(contentType)
@@ -66,120 +110,110 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Could not extract file' })
     }
 
+    // Step 2: Convert PDF to text
     const pdfData = await pdfParse(fileBuffer)
-    const rfpText = pdfData.text
+    const rawText = pdfData.text
 
-    if (!rfpText || rfpText.trim().length === 0) {
+    if (!rawText || rawText.trim().length === 0) {
       return res.status(400).json({ error: 'PDF appears to be empty or unreadable' })
     }
 
-    const prompt = `
-You are an expert RFP (Request for Proposal) analyst working for a company called SPS.
+    // Step 3: Clean the extracted text before sending to Groq
+    const rfpText = cleanText(rawText)
 
-You have been given the following compliance rules to apply when analyzing any RFP document. Apply these rules strictly when assigning GO, NO-GO, or REVIEW status to each checklist item.
+    // Step 4: Send to Groq with properly split system and user messages
+    const systemPrompt = `You are an expert RFP (Request for Proposal) analyst working for a company called SPS.
 
-COMPLIANCE RULES:
+Apply these compliance rules strictly when assigning GO, NO-GO, or REVIEW status:
 
 FINANCIAL RULES:
-- Payment Terms: If NET30 then GO. If more than NET30 then REVIEW (escalate to accounting).
-- Financial Stability: Unaudited financial statements are required — mark as REVIEW until confirmed.
-- Insurance: If total insurance required is $5 million or less then GO. If more than $5 million then NO-GO.
-- Profitability Analysis: Always REVIEW — requires human assessment of revenue vs projected costs.
-- Bid Bond: Always REVIEW — must be confirmed and submitted.
+- Payment Terms: NET30 = GO. More than NET30 = REVIEW.
+- Financial Stability: Unaudited financial statements required = REVIEW.
+- Insurance: Total insurance $5M or less = GO. More than $5M = NO-GO.
+- Profitability Analysis: Always REVIEW.
+- Bid Bond: Always REVIEW.
 
 LEGAL RULES:
-- Relevant Experience: Always REVIEW — must verify company has relevant past experience.
-- Registration Requirement: Always REVIEW — must verify company is registered appropriately.
-- Financial Statement of Previous Year: Always REVIEW — must be collected and submitted.
-- Qualified Personnel: Always REVIEW — must verify qualified staff are available.
-- Technical Knowhow: Always REVIEW — must verify technical capability exists.
-- Compliance of Law: Always REVIEW — must verify all legal compliance.
-- State Registration: Always REVIEW — must verify registration in the state where project is executed.
-- E-Verify: Always REVIEW — must confirm E-Verify enrollment.
-- Contractual Obligations: Always REVIEW — termination clauses, liability limits, and dispute resolution must be reviewed by legal team.
+- Relevant Experience: Always REVIEW.
+- Registration Requirement: Always REVIEW.
+- Financial Statement of Previous Year: Always REVIEW.
+- Qualified Personnel: Always REVIEW.
+- Technical Knowhow: Always REVIEW.
+- Compliance of Law: Always REVIEW.
+- State Registration: Always REVIEW.
+- E-Verify: Always REVIEW.
+- Contractual Obligations: Always REVIEW.
 
 OPERATIONS RULES:
-- Required Forms (Tax ID, Owner Name, ownership percentage): Always REVIEW — must be completed.
-- Small Business or MBE certification: Always REVIEW — check if applicable and complete.
-- Workers Compensation Insurance: Always REVIEW — must confirm certificate is in place.
-- Business with Iran disclosure: Always REVIEW — must complete the disclosure form.
-- Submission Deadlines: Always REVIEW — must confirm all forms submitted on time.
-- Document Compliance: Always REVIEW — verify formatting and submission requirements.
-- Signatory Authority: Always REVIEW — confirm correct person with authority signs.
-- Vendor Registration: Always REVIEW — confirm registration is complete before submission.
+- Required Forms (Tax ID, Owner Name, ownership percentage): Always REVIEW.
+- Small Business or MBE certification: Always REVIEW.
+- Workers Compensation Insurance: Always REVIEW.
+- Business with Iran disclosure: Always REVIEW.
+- Submission Deadlines: Always REVIEW.
+- Document Compliance: Always REVIEW.
+- Signatory Authority: Always REVIEW.
+- Vendor Registration: Always REVIEW.
 
 TECHNICAL RULES:
-- Scope of Services alignment with SPS: Always REVIEW — verify RFP scope matches what SPS offers.
-- Technical Requirements match SPS capabilities: Always REVIEW — verify SPS can meet all specs.
-- Compliance with Industry Standards: Always REVIEW — verify SPS follows required standards.
-- Security Requirements: Always REVIEW — verify SPS can meet data protection and encryption needs.
-- Integration Needs: Always REVIEW — verify SPS can support required system integrations.
+- Scope of Services alignment with SPS: Always REVIEW.
+- Technical Requirements match SPS capabilities: Always REVIEW.
+- Compliance with Industry Standards: Always REVIEW.
+- Security Requirements: Always REVIEW.
+- Integration Needs: Always REVIEW.
+
+IMPORTANT: For every checklist item, write a specific reason that references actual details, numbers, dates, or requirements found in the RFP document. Do not just say "Always review" — explain WHY based on what the RFP actually says.
 
 STATUS DEFINITIONS:
 - GO: Requirement is clearly met based on the rules above.
-- NO-GO: Requirement cannot be met or is a dealbreaker based on the rules above.
-- REVIEW: Requires human review or verification before a final decision can be made.
+- NO-GO: Requirement cannot be met or is a dealbreaker.
+- REVIEW: Requires human review before a final decision.
 
-Now analyze the following RFP document and return ONLY a valid JSON object with exactly this structure. No extra text, no markdown, no explanation, just the raw JSON:
+You always respond with valid JSON only. No markdown, no explanation, no code blocks, just the raw JSON object.
 
+Return exactly this JSON structure:
 {
   "summary": {
-    "issuingAgency": "name of the agency or organization issuing the RFP",
-    "projectTitle": "title of the project",
-    "contractValue": "estimated contract value if mentioned, otherwise null",
-    "submissionDeadline": "submission deadline if mentioned, otherwise null",
-    "projectDuration": "duration of the project if mentioned, otherwise null",
-    "rfpNumber": "RFP reference number if mentioned, otherwise null"
+    "issuingAgency": "string or null",
+    "projectTitle": "string or null",
+    "contractValue": "string or null",
+    "submissionDeadline": "string or null",
+    "projectDuration": "string or null",
+    "rfpNumber": "string or null"
   },
-  "deliverables": [
-    "deliverable 1",
-    "deliverable 2"
-  ],
-  "evaluationCriteria": [
-    "criterion 1 with weight or score if mentioned",
-    "criterion 2 with weight or score if mentioned"
-  ],
+  "deliverables": ["string"],
+  "evaluationCriteria": ["string"],
   "complianceChecklist": {
-    "financial": [
-      { "task": "task description", "status": "GO or NO-GO or REVIEW", "reason": "one sentence explaining why this status was assigned" }
-    ],
-    "legal": [
-      { "task": "task description", "status": "GO or NO-GO or REVIEW", "reason": "one sentence explaining why this status was assigned" }
-    ],
-    "operations": [
-      { "task": "task description", "status": "GO or NO-GO or REVIEW", "reason": "one sentence explaining why this status was assigned" }
-    ],
-    "technical": [
-      { "task": "task description", "status": "GO or NO-GO or REVIEW", "reason": "one sentence explaining why this status was assigned" }
-    ]
+    "financial": [{ "task": "string", "status": "GO or NO-GO or REVIEW", "reason": "string" }],
+    "legal": [{ "task": "string", "status": "GO or NO-GO or REVIEW", "reason": "string" }],
+    "operations": [{ "task": "string", "status": "GO or NO-GO or REVIEW", "reason": "string" }],
+    "technical": [{ "task": "string", "status": "GO or NO-GO or REVIEW", "reason": "string" }]
   }
-}
+}`
 
-RFP Document:
-${rfpText}
-`
+    const userPrompt = `Analyze this RFP document and return the JSON response as instructed:\n\n${rfpText}`
 
+    // Step 5: Call Groq API
     const completion = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       messages: [
-        {
-          role: 'system',
-          content: 'You are an expert RFP analyst for a company called SPS. You always respond with valid JSON only. No markdown, no explanation, no code blocks, just the raw JSON object.'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
       ],
-      temperature: 0.1,
-      max_tokens: 3000,
+      temperature: 0.2,
+      max_tokens: 6000,
     })
 
+    // Step 6: Extract raw response
     const rawResponse = completion.choices[0].message.content
 
+    // Step 7: Parse JSON safely
     let analysis
     try {
-      analysis = JSON.parse(rawResponse)
+      const cleaned = rawResponse
+        .replace(/```json/gi, '')
+        .replace(/```/g, '')
+        .trim()
+      analysis = JSON.parse(cleaned)
     } catch {
       return res.status(500).json({
         error: 'AI returned invalid JSON',
@@ -187,6 +221,10 @@ ${rfpText}
       })
     }
 
+    // Step 8: Normalize status values and fill missing departments
+    analysis.complianceChecklist = normalizeDepartments(analysis.complianceChecklist)
+
+    // Step 9: Send to frontend
     return res.status(200).json(analysis)
 
   } catch (error) {
