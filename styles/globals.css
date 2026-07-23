@@ -154,3 +154,164 @@ body {
   font-size: 0.85rem;
   vertical-align: middle;
 }
+
+/* Bid Score Circle */
+.bid-score-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 8px 0;
+}
+
+.bid-score-circle {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 5px solid;
+  flex-shrink: 0;
+}
+
+.bid-score-circle.strong {
+  border-color: #198754;
+  background-color: #f0fff4;
+}
+
+.bid-score-circle.caution {
+  border-color: #ffc107;
+  background-color: #fffdf0;
+}
+
+.bid-score-circle.donot {
+  border-color: #dc3545;
+  background-color: #fff5f5;
+}
+
+.bid-score-number {
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.bid-score-label-small {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 2px;
+}
+
+.bid-score-info {
+  flex: 1;
+}
+
+.bid-score-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.bid-score-subtitle {
+  font-size: 0.85rem;
+  color: #6c757d;
+}
+
+/* Risk Flag Summary */
+.risk-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 0.88rem;
+}
+
+.risk-item:last-child {
+  border-bottom: none;
+}
+
+.risk-dept-badge {
+  font-size: 0.7rem;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background-color: #e9ecef;
+  color: #495057;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+/* Deadline Tracker */
+.deadline-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  background-color: #ffffff;
+  border: 1px solid #dee2e6;
+}
+
+.deadline-urgent {
+  border-left: 4px solid #dc3545;
+}
+
+.deadline-soon {
+  border-left: 4px solid #ffc107;
+}
+
+.deadline-ok {
+  border-left: 4px solid #198754;
+}
+
+.deadline-expired {
+  border-left: 4px solid #6c757d;
+  opacity: 0.6;
+}
+
+.deadline-days {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+}
+
+/* Compare table */
+.compare-header-cell {
+  background-color: #1a1a2e;
+  color: #ffffff;
+  text-align: center;
+  padding: 12px;
+  font-size: 0.82rem;
+}
+
+.compare-label-cell {
+  background-color: #f8f9fa;
+  font-weight: 600;
+  font-size: 0.82rem;
+  padding: 10px 14px;
+  border-right: 2px solid #dee2e6;
+}
+
+.compare-value-cell {
+  text-align: center;
+  font-size: 0.85rem;
+  padding: 10px 14px;
+}
+
+.compare-best {
+  background-color: #f0fff4;
+}
+
+.compare-worst {
+  background-color: #fff5f5;
+}
+
+/* Checkbox in dashboard table */
+.form-check-input {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
