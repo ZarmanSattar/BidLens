@@ -5,7 +5,7 @@ import ResultsPanel from '../components/ResultsPanel'
 function exportToPDF(results) {
   import('jspdf').then(({ default: jsPDF }) => {
     import('jspdf-autotable').then(({ default: autoTable }) => {
-      const doc = new jsPDF()
+      const doc = new jsPDF('landscape')
       const pageWidth = doc.internal.pageSize.getWidth()
       doc.setFontSize(20)
       doc.setTextColor(13, 110, 253)
@@ -30,19 +30,34 @@ function exportToPDF(results) {
           styles: { fontSize: 9 },
         })
       }
-      const afterSummary = doc.lastAutoTable.finalY + 8
+
+      // Handle Nested Deliverables structure safely
+      const deliverableRows = []
+      if (results.deliverables && results.deliverables.length > 0) {
+        results.deliverables.forEach((group, gIndex) => {
+          deliverableRows.push([`${gIndex + 1}`, group.parent])
+          if (group.children && group.children.length > 0) {
+            group.children.forEach((child, cIndex) => {
+              deliverableRows.push([`${gIndex + 1}.${cIndex + 1}`, child])
+            })
+          }
+        })
+      }
+
+      const afterSummary = doc.lastAutoTable ? doc.lastAutoTable.finalY + 8 : 34
       doc.setFontSize(13)
       doc.setTextColor(33, 37, 41)
       doc.text('Deliverables', 14, afterSummary)
       autoTable(doc, {
         startY: afterSummary + 4,
-        head: [['#', 'Deliverable']],
-        body: (results.deliverables || []).map((item, i) => [i + 1, item]),
+        head: [['Level', 'Deliverable']],
+        body: deliverableRows,
         theme: 'striped',
         headStyles: { fillColor: [13, 110, 253] },
         styles: { fontSize: 9 },
-        columnStyles: { 0: { cellWidth: 10 } },
+        columnStyles: { 0: { cellWidth: 15 } },
       })
+
       const afterDeliverables = doc.lastAutoTable.finalY + 8
       doc.setFontSize(13)
       doc.text('Evaluation Criteria', 14, afterDeliverables)
@@ -53,14 +68,16 @@ function exportToPDF(results) {
         theme: 'striped',
         headStyles: { fillColor: [13, 202, 240] },
         styles: { fontSize: 9 },
-        columnStyles: { 0: { cellWidth: 10 } },
+        columnStyles: { 0: { cellWidth: 15 } },
       })
+
       const departments = [
         { key: 'financial', label: 'Financial', color: [255, 193, 7] },
         { key: 'legal', label: 'Legal', color: [220, 53, 69] },
         { key: 'operations', label: 'Operations', color: [108, 117, 125] },
         { key: 'technical', label: 'Technical', color: [13, 110, 253] },
       ]
+      
       for (const dept of departments) {
         const items = results.complianceChecklist?.[dept.key] || []
         if (items.length === 0) continue
@@ -70,18 +87,20 @@ function exportToPDF(results) {
         doc.text(`Compliance — ${dept.label}`, 14, startY)
         autoTable(doc, {
           startY: startY + 4,
-          head: [['Task', 'Status', 'Reason']],
-          body: items.map(item => [item.task, item.status, item.reason || '']),
+          head: [['Checklist Item', 'Decision', 'Reason', 'Evidence from RFP']],
+          body: items.map(item => [item.task, item.status, item.reason || '', item.evidence || '']),
           theme: 'grid',
           headStyles: { fillColor: dept.color },
           styles: { fontSize: 8, cellPadding: 3 },
           columnStyles: {
-            0: { cellWidth: 70 },
-            1: { cellWidth: 20, halign: 'center' },
-            2: { cellWidth: 90 },
+            0: { cellWidth: 40 },
+            1: { cellWidth: 22, halign: 'center' },
+            2: { cellWidth: 100 },
+            3: { cellWidth: 100 },
           },
         })
       }
+
       const pageCount = doc.internal.getNumberOfPages()
       for (let i = 1; i <= pageCount; i++) {
         doc.setPage(i)
@@ -114,13 +133,24 @@ function exportToExcel(results) {
     const summarySheet = XLSX.utils.aoa_to_sheet(summaryData)
     summarySheet['!cols'] = [{ wch: 25 }, { wch: 50 }]
     XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary')
-    const deliverableData = [
-      ['#', 'Deliverable'],
-      ...(results.deliverables || []).map((item, i) => [i + 1, item])
-    ]
+
+    // Handle Nested Deliverables structure safely for Excel
+    const deliverableData = [['Level', 'Deliverable']]
+    if (results.deliverables && results.deliverables.length > 0) {
+      results.deliverables.forEach((group, gIndex) => {
+        deliverableData.push([`${gIndex + 1}`, group.parent])
+        if (group.children && group.children.length > 0) {
+          group.children.forEach((child, cIndex) => {
+            deliverableData.push([`${gIndex + 1}.${cIndex + 1}`, child])
+          })
+        }
+      })
+    }
+
     const deliverableSheet = XLSX.utils.aoa_to_sheet(deliverableData)
-    deliverableSheet['!cols'] = [{ wch: 5 }, { wch: 80 }]
+    deliverableSheet['!cols'] = [{ wch: 10 }, { wch: 80 }]
     XLSX.utils.book_append_sheet(workbook, deliverableSheet, 'Deliverables')
+
     const criteriaData = [
       ['#', 'Evaluation Criterion'],
       ...(results.evaluationCriteria || []).map((item, i) => [i + 1, item])
@@ -128,14 +158,15 @@ function exportToExcel(results) {
     const criteriaSheet = XLSX.utils.aoa_to_sheet(criteriaData)
     criteriaSheet['!cols'] = [{ wch: 5 }, { wch: 80 }]
     XLSX.utils.book_append_sheet(workbook, criteriaSheet, 'Evaluation Criteria')
+
     for (const dept of ['financial', 'legal', 'operations', 'technical']) {
       const items = results.complianceChecklist?.[dept] || []
       const sheetData = [
-        ['Task', 'Status', 'Reason'],
-        ...items.map(item => [item.task, item.status, item.reason || ''])
+        ['Checklist Item', 'Decision', 'Reason', 'Evidence from RFP'],
+        ...items.map(item => [item.task, item.status, item.reason || '', item.evidence || ''])
       ]
       const sheet = XLSX.utils.aoa_to_sheet(sheetData)
-      sheet['!cols'] = [{ wch: 50 }, { wch: 12 }, { wch: 70 }]
+      sheet['!cols'] = [{ wch: 35 }, { wch: 15 }, { wch: 60 }, { wch: 60 }]
       XLSX.utils.book_append_sheet(workbook, sheet, dept.charAt(0).toUpperCase() + dept.slice(1))
     }
     XLSX.writeFile(workbook, 'BidLens_RFP_Analysis.xlsx')
@@ -150,9 +181,9 @@ function getDecision(complianceChecklist) {
     ...(complianceChecklist?.technical || []),
   ]
   const hasNoGo = allItems.some(item => item.status === 'NO-GO')
-  const hasReview = allItems.some(item => item.status === 'REVIEW')
+  const hasEscalate = allItems.some(item => item.status === 'ESCALATE')
   if (hasNoGo) return { label: 'REJECT', color: 'danger' }
-  if (hasReview) return { label: 'ESCALATE', color: 'warning' }
+  if (hasEscalate) return { label: 'ESCALATE', color: 'warning' }
   return { label: 'PROCEED', color: 'success' }
 }
 
@@ -166,7 +197,7 @@ function getCounts(complianceChecklist) {
   return {
     go: allItems.filter(i => i.status === 'GO').length,
     noGo: allItems.filter(i => i.status === 'NO-GO').length,
-    review: allItems.filter(i => i.status === 'REVIEW').length,
+    escalate: allItems.filter(i => i.status === 'ESCALATE').length,
   }
 }
 
@@ -181,7 +212,7 @@ function getBidScore(complianceChecklist) {
   const maxPoints = allItems.length * 2
   const earned = allItems.reduce((sum, item) => {
     if (item.status === 'GO') return sum + 2
-    if (item.status === 'REVIEW') return sum + 1
+    if (item.status === 'ESCALATE') return sum + 1
     return sum
   }, 0)
   return Math.round((earned / maxPoints) * 100)
@@ -427,7 +458,7 @@ export default function Dashboard() {
                     <th className="text-center">Score</th>
                     <th className="text-center">✅ GO</th>
                     <th className="text-center">🚫 NO-GO</th>
-                    <th className="text-center">⚠️ REVIEW</th>
+                    <th className="text-center">⚠️ ESCALATE</th>
                     <th className="text-center">Decision</th>
                     <th className="text-center">Actions</th>
                   </tr>
@@ -480,7 +511,7 @@ export default function Dashboard() {
                             <span className="text-danger fw-bold">{counts.noGo}</span>
                           </td>
                           <td className="text-center">
-                            <span className="text-warning fw-bold">{counts.review}</span>
+                            <span className="text-warning fw-bold">{counts.escalate}</span>
                           </td>
                           <td className="text-center">
                             <span className={`badge bg-${decision.color}`}>
