@@ -6,13 +6,13 @@ import * as XLSX from 'xlsx'
 const statusColors = {
   'GO': 'success',
   'NO-GO': 'danger',
-  'REVIEW': 'warning'
+  'ESCALATE': 'warning'
 }
 
 const statusIcons = {
   'GO': '✅',
   'NO-GO': '🚫',
-  'REVIEW': '⚠️'
+  'ESCALATE': '⚠️'
 }
 
 const HIGH_PRIORITY_TASKS = [
@@ -37,7 +37,7 @@ function calculateBidScore(complianceChecklist) {
   const maxPoints = allItems.length * 2
   const earned = allItems.reduce((sum, item) => {
     if (item.status === 'GO') return sum + 2
-    if (item.status === 'REVIEW') return sum + 1
+    if (item.status === 'ESCALATE') return sum + 1
     return sum
   }, 0)
 
@@ -53,31 +53,31 @@ function calculateBidScore(complianceChecklist) {
 function collectRiskFlags(complianceChecklist) {
   const departments = ['financial', 'legal', 'operations', 'technical']
   const noGoItems = []
-  const highPriorityReviews = []
+  const highPriorityEscalations = []
 
   for (const dept of departments) {
     const items = complianceChecklist?.[dept] || []
     for (const item of items) {
       if (item.status === 'NO-GO') {
         noGoItems.push({ ...item, dept })
-      } else if (item.status === 'REVIEW') {
+      } else if (item.status === 'ESCALATE') {
         const isHighPriority = HIGH_PRIORITY_TASKS.some(keyword =>
           item.task.toLowerCase().includes(keyword)
         )
         if (isHighPriority) {
-          highPriorityReviews.push({ ...item, dept })
+          highPriorityEscalations.push({ ...item, dept })
         }
       }
     }
   }
 
-  return { noGoItems, highPriorityReviews }
+  return { noGoItems, highPriorityEscalations }
 }
 
 // ── Export to PDF ─────────────────────────────────────────
 
 function exportToPDF(data) {
-  const doc = new jsPDF()
+  const doc = new jsPDF('landscape')
   const pageWidth = doc.internal.pageSize.getWidth()
 
   doc.setFontSize(20)
@@ -105,18 +105,30 @@ function exportToPDF(data) {
     })
   }
 
-  const afterSummary = doc.lastAutoTable.finalY + 8
+  const deliverableRows = []
+  if (data.deliverables && data.deliverables.length > 0) {
+    data.deliverables.forEach((group, gIndex) => {
+      deliverableRows.push([`${gIndex + 1}`, group.parent])
+      if (group.children && group.children.length > 0) {
+        group.children.forEach((child, cIndex) => {
+          deliverableRows.push([`${gIndex + 1}.${cIndex + 1}`, child])
+        })
+      }
+    })
+  }
+
+  const afterSummary = doc.lastAutoTable ? doc.lastAutoTable.finalY + 8 : 34
   doc.setFontSize(13)
   doc.setTextColor(33, 37, 41)
   doc.text('Deliverables', 14, afterSummary)
   autoTable(doc, {
     startY: afterSummary + 4,
-    head: [['#', 'Deliverable']],
-    body: (data.deliverables || []).map((item, i) => [i + 1, item]),
+    head: [['Level', 'Deliverable']],
+    body: deliverableRows,
     theme: 'striped',
     headStyles: { fillColor: [13, 110, 253] },
     styles: { fontSize: 9 },
-    columnStyles: { 0: { cellWidth: 10 } },
+    columnStyles: { 0: { cellWidth: 15 } },
   })
 
   const afterDeliverables = doc.lastAutoTable.finalY + 8
@@ -129,7 +141,7 @@ function exportToPDF(data) {
     theme: 'striped',
     headStyles: { fillColor: [13, 202, 240] },
     styles: { fontSize: 9 },
-    columnStyles: { 0: { cellWidth: 10 } },
+    columnStyles: { 0: { cellWidth: 15 } },
   })
 
   const departments = [
@@ -148,15 +160,16 @@ function exportToPDF(data) {
     doc.text(`Compliance — ${dept.label}`, 14, startY)
     autoTable(doc, {
       startY: startY + 4,
-      head: [['Task', 'Status', 'Reason']],
-      body: items.map(item => [item.task, item.status, item.reason || '']),
+      head: [['Checklist Item', 'Decision', 'Reason', 'Evidence from RFP']],
+      body: items.map(item => [item.task, item.status, item.reason || '', item.evidence || '']),
       theme: 'grid',
       headStyles: { fillColor: dept.color },
       styles: { fontSize: 8, cellPadding: 3 },
       columnStyles: {
-        0: { cellWidth: 70 },
-        1: { cellWidth: 20, halign: 'center' },
-        2: { cellWidth: 90 },
+        0: { cellWidth: 40 },
+        1: { cellWidth: 22, halign: 'center' },
+        2: { cellWidth: 100 },
+        3: { cellWidth: 100 },
       },
     })
   }
@@ -196,12 +209,19 @@ function exportToExcel(data) {
     summarySheet['!cols'] = [{ wch: 25 }, { wch: 50 }]
     XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary')
 
-    const deliverableData = [
-      ['#', 'Deliverable'],
-      ...(data.deliverables || []).map((item, i) => [i + 1, item])
-    ]
+    const deliverableData = [['Level', 'Deliverable']]
+    if (data.deliverables && data.deliverables.length > 0) {
+      data.deliverables.forEach((group, gIndex) => {
+        deliverableData.push([`${gIndex + 1}`, group.parent])
+        if (group.children && group.children.length > 0) {
+          group.children.forEach((child, cIndex) => {
+            deliverableData.push([`${gIndex + 1}.${cIndex + 1}`, child])
+          })
+        }
+      })
+    }
     const deliverableSheet = XLSX.utils.aoa_to_sheet(deliverableData)
-    deliverableSheet['!cols'] = [{ wch: 5 }, { wch: 80 }]
+    deliverableSheet['!cols'] = [{ wch: 10 }, { wch: 80 }]
     XLSX.utils.book_append_sheet(workbook, deliverableSheet, 'Deliverables')
 
     const criteriaData = [
@@ -215,11 +235,11 @@ function exportToExcel(data) {
     for (const dept of ['financial', 'legal', 'operations', 'technical']) {
       const items = data.complianceChecklist?.[dept] || []
       const sheetData = [
-        ['Task', 'Status', 'Reason'],
-        ...items.map(item => [item.task, item.status, item.reason || ''])
+        ['Checklist Item', 'Decision', 'Reason', 'Evidence from RFP'],
+        ...items.map(item => [item.task, item.status, item.reason || '', item.evidence || ''])
       ]
       const sheet = XLSX.utils.aoa_to_sheet(sheetData)
-      sheet['!cols'] = [{ wch: 50 }, { wch: 12 }, { wch: 70 }]
+      sheet['!cols'] = [{ wch: 35 }, { wch: 15 }, { wch: 60 }, { wch: 60 }]
       XLSX.utils.book_append_sheet(workbook, sheet, dept.charAt(0).toUpperCase() + dept.slice(1))
     }
 
@@ -239,13 +259,13 @@ function BidScoreCard({ complianceChecklist }) {
   }
 
   return (
-    <div className="card mb-4 shadow-sm">
-      <div className="card-header text-white" style={{ backgroundColor: color }}>
-        <h5 className="mb-0">🎯 Bid Decision Score</h5>
+    <div className="card mb-4 shadow-sm border-0">
+      <div className="card-header text-white border-0" style={{ backgroundColor: color }}>
+        <h5 className="mb-0 fw-bold">🎯 Bid Decision Score</h5>
       </div>
-      <div className="card-body">
+      <div className="card-body bg-light">
         <div className="bid-score-wrapper">
-          <div className={`bid-score-circle ${variant}`}>
+          <div className={`bid-score-circle ${variant} bg-white shadow-sm`}>
             <span className="bid-score-number" style={{ color }}>
               {score}
             </span>
@@ -257,7 +277,7 @@ function BidScoreCard({ complianceChecklist }) {
             <div className="bid-score-title" style={{ color }}>
               {label}
             </div>
-            <div className="bid-score-subtitle">
+            <div className="bid-score-subtitle text-dark">
               {descriptions[variant]}
             </div>
             <div className="mt-2">
@@ -273,12 +293,12 @@ function BidScoreCard({ complianceChecklist }) {
 }
 
 function RiskFlagSummary({ complianceChecklist }) {
-  const { noGoItems, highPriorityReviews } = collectRiskFlags(complianceChecklist)
+  const { noGoItems, highPriorityEscalations } = collectRiskFlags(complianceChecklist)
 
-  if (noGoItems.length === 0 && highPriorityReviews.length === 0) {
+  if (noGoItems.length === 0 && highPriorityEscalations.length === 0) {
     return (
-      <div className="card mb-4 shadow-sm border-success">
-        <div className="card-body py-3">
+      <div className="card mb-4 shadow-sm border-success border-opacity-25">
+        <div className="card-body py-3 bg-success bg-opacity-10 rounded">
           <span className="text-success fw-semibold">
             ✅ No critical issues found. All financial thresholds are within acceptable range.
           </span>
@@ -288,27 +308,27 @@ function RiskFlagSummary({ complianceChecklist }) {
   }
 
   return (
-    <div className="card mb-4 shadow-sm">
-      <div className="card-header bg-danger text-white">
-        <h5 className="mb-0">🚨 Risk Flag Summary</h5>
+    <div className="card mb-4 shadow-sm border-0">
+      <div className="card-header bg-transparent border-bottom">
+        <h5 className="mb-0 fw-bold text-danger">🚨 Risk Flag Summary</h5>
       </div>
       <div className="card-body">
 
         {noGoItems.length > 0 && (
           <div className="mb-3">
-            <p className="fw-semibold text-danger mb-2">
+            <p className="fw-bold text-danger mb-3 border-bottom pb-2">
               🚫 Critical Issues — NO-GO ({noGoItems.length})
             </p>
             {noGoItems.map((item, index) => (
-              <div className="risk-item" key={index}>
-                <span className="risk-dept-badge">
+              <div className="risk-item bg-light p-3 rounded mb-2 border border-danger border-opacity-25" key={index}>
+                <span className="risk-dept-badge bg-danger">
                   {item.dept.charAt(0).toUpperCase() + item.dept.slice(1)}
                 </span>
                 <div>
-                  <span className="fw-semibold">{item.task}</span>
+                  <span className="fw-bold text-dark">{item.task}</span>
                   {item.reason && (
-                    <div>
-                      <small className="text-muted fst-italic">{item.reason}</small>
+                    <div className="mt-1">
+                      <span className="text-muted">{item.reason}</span>
                     </div>
                   )}
                 </div>
@@ -317,21 +337,21 @@ function RiskFlagSummary({ complianceChecklist }) {
           </div>
         )}
 
-        {highPriorityReviews.length > 0 && (
-          <div>
-            <p className="fw-semibold text-warning mb-2">
-              ⚠️ High Priority Reviews ({highPriorityReviews.length})
+        {highPriorityEscalations.length > 0 && (
+          <div className="mt-4">
+            <p className="fw-bold text-warning mb-3 border-bottom pb-2">
+              ⚠️ High Priority Escalations ({highPriorityEscalations.length})
             </p>
-            {highPriorityReviews.map((item, index) => (
-              <div className="risk-item" key={index}>
-                <span className="risk-dept-badge">
+            {highPriorityEscalations.map((item, index) => (
+              <div className="risk-item bg-light p-3 rounded mb-2 border border-warning border-opacity-25" key={index}>
+                <span className="risk-dept-badge bg-warning text-dark">
                   {item.dept.charAt(0).toUpperCase() + item.dept.slice(1)}
                 </span>
                 <div>
-                  <span className="fw-semibold">{item.task}</span>
+                  <span className="fw-bold text-dark">{item.task}</span>
                   {item.reason && (
-                    <div>
-                      <small className="text-muted fst-italic">{item.reason}</small>
+                    <div className="mt-1">
+                      <span className="text-muted">{item.reason}</span>
                     </div>
                   )}
                 </div>
@@ -358,17 +378,21 @@ function SummaryCard({ summary }) {
   ]
 
   return (
-    <div className="card mb-4 shadow-sm">
-      <div className="card-header bg-secondary text-white">
-        <h5 className="mb-0">📋 RFP Summary</h5>
+    <div className="card mb-4 shadow-sm border-0">
+      <div className="card-header bg-transparent border-bottom">
+        <h5 className="mb-0 fw-bold text-secondary">📋 RFP Summary</h5>
       </div>
-      <div className="card-body">
-        <div className="row">
+      <div className="card-body bg-light rounded-bottom">
+        <div className="row g-3">
           {fields.map((field, index) => (
             field.value && field.value !== 'null' && (
-              <div className="col-md-6 mb-2" key={index}>
-                <span className="text-muted small">{field.label}</span>
-                <p className="mb-0 fw-semibold">{field.value}</p>
+              <div className="col-md-4 col-sm-6" key={index}>
+                <div className="p-3 bg-white border rounded h-100 shadow-sm">
+                  <span className="text-muted small text-uppercase fw-bold" style={{ letterSpacing: '0.5px' }}>
+                    {field.label}
+                  </span>
+                  <p className="mb-0 fw-semibold text-dark mt-1">{field.value}</p>
+                </div>
               </div>
             )
           ))}
@@ -378,31 +402,76 @@ function SummaryCard({ summary }) {
   )
 }
 
-function ChecklistItem({ task, status, reason }) {
-  const [showReason, setShowReason] = useState(false)
+// Smart Parsing Deliverable Component
+function DeliverableItem({ text, indexStr }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const colonIndex = text.indexOf(':')
+
+  // If no colon is found, render it as a standard item
+  if (colonIndex === -1) {
+    return (
+      <li className="list-group-item py-3 px-4 d-flex align-items-start border-0 border-bottom">
+        <span className="text-primary fw-bold me-3 mt-1" style={{ fontSize: '0.85rem' }}>
+          {indexStr}
+        </span>
+        <span className="text-secondary" style={{ lineHeight: '1.6' }}>
+          {text}
+        </span>
+      </li>
+    )
+  }
+
+  // Split at the colon to create a title and description
+  const title = text.slice(0, colonIndex).trim()
+  const description = text.slice(colonIndex + 1).trim()
 
   return (
-    <div className="border-bottom py-2">
-      <div className="d-flex align-items-start justify-content-between">
-        <span className="me-3">{task}</span>
-        <div className="d-flex align-items-center gap-2">
-          <span className={`badge bg-${statusColors[status] || 'secondary'} text-nowrap`}>
-            {statusIcons[status]} {status}
-          </span>
-          {reason && (
-            <button
-              className="btn btn-link btn-sm p-0 text-muted"
-              onClick={() => setShowReason(!showReason)}
-              title="Show reason"
-            >
-              {showReason ? '▲' : '▼'}
-            </button>
-          )}
+    <li className="list-group-item py-3 px-4 d-flex align-items-start border-0 border-bottom">
+      <span className="text-primary fw-bold me-3 mt-1" style={{ fontSize: '0.85rem' }}>
+        {indexStr}
+      </span>
+      <div className="flex-grow-1">
+        <div className="d-flex justify-content-between align-items-center">
+          <span className="fw-bold text-dark">{title}</span>
+          <button 
+            className="btn btn-sm btn-link text-decoration-none text-secondary p-0 ms-3 text-nowrap"
+            onClick={() => setIsOpen(!isOpen)}
+            style={{ fontSize: '0.8rem' }}
+          >
+            {isOpen ? '▲ Hide Details' : '⌄ View Details'}
+          </button>
         </div>
+        {isOpen && (
+          <div className="mt-2 text-secondary" style={{ lineHeight: '1.6', fontSize: '0.9rem' }}>
+            {description}
+          </div>
+        )}
       </div>
-      {showReason && reason && (
-        <div className="mt-1">
-          <small className="text-muted fst-italic">{reason}</small>
+    </li>
+  )
+}
+
+// Collapsible Evidence Component
+function EvidenceToggle({ text }) {
+  const [isOpen, setIsOpen] = useState(false)
+
+  if (!text || text === 'Not specified in RFP') {
+    return <span className="text-muted fst-italic">{text}</span>
+  }
+
+  return (
+    <div>
+      <button 
+        className="btn btn-sm btn-light border text-secondary fw-semibold d-flex align-items-center gap-2 mb-2"
+        onClick={() => setIsOpen(!isOpen)}
+        style={{ fontSize: '0.8rem' }}
+      >
+        {isOpen ? '▲ Hide Evidence' : '📄 View Evidence'}
+      </button>
+      
+      {isOpen && (
+        <div className="p-3 bg-light border rounded text-secondary shadow-sm" style={{ fontSize: '0.85rem', lineHeight: '1.6', maxHeight: '250px', overflowY: 'auto' }}>
+          {text}
         </div>
       )}
     </div>
@@ -411,28 +480,60 @@ function ChecklistItem({ task, status, reason }) {
 
 function DepartmentChecklist({ items }) {
   if (!items || items.length === 0) {
-    return <p className="text-muted">No items found.</p>
+    return <p className="text-muted p-4 text-center">No items found.</p>
   }
 
   const goCount = items.filter(i => i.status === 'GO').length
   const noGoCount = items.filter(i => i.status === 'NO-GO').length
-  const reviewCount = items.filter(i => i.status === 'REVIEW').length
+  const escalateCount = items.filter(i => i.status === 'ESCALATE').length
 
   return (
     <div>
-      <div className="d-flex gap-3 mb-3">
-        <small className="text-success fw-semibold">✅ GO: {goCount}</small>
-        <small className="text-danger fw-semibold">🚫 NO-GO: {noGoCount}</small>
-        <small className="text-warning fw-semibold">⚠️ REVIEW: {reviewCount}</small>
+      <div className="d-flex gap-4 mb-3 px-4 pt-4 pb-2 border-bottom">
+        <span className="badge bg-success bg-opacity-10 text-success border border-success border-opacity-25 px-3 py-2 fs-6">
+          ✅ GO: {goCount}
+        </span>
+        <span className="badge bg-danger bg-opacity-10 text-danger border border-danger border-opacity-25 px-3 py-2 fs-6">
+          🚫 NO-GO: {noGoCount}
+        </span>
+        <span className="badge bg-warning bg-opacity-10 text-dark border border-warning border-opacity-50 px-3 py-2 fs-6">
+          ⚠️ ESCALATE: {escalateCount}
+        </span>
       </div>
-      {items.map((item, index) => (
-        <ChecklistItem
-          key={index}
-          task={item.task}
-          status={item.status}
-          reason={item.reason}
-        />
-      ))}
+      
+      <div className="table-responsive px-3 pb-3">
+        <table className="table table-hover align-middle mb-0 border">
+          <thead className="table-light text-secondary">
+            <tr>
+              <th className="py-3 px-3" style={{ width: '22%' }}>Checklist Item</th>
+              <th className="py-3 px-3 text-center" style={{ width: '13%' }}>Decision</th>
+              <th className="py-3 px-3" style={{ width: '25%' }}>Reason</th>
+              {/* Enforced minimum width to prevent horizontal squeezing */}
+              <th className="py-3 px-3" style={{ width: '40%', minWidth: '300px' }}>Evidence from RFP</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, index) => (
+              <tr key={index}>
+                <td className="fw-bold text-dark px-3 py-3">{item.task}</td>
+                <td className="text-center px-3 py-3">
+                  <span className={`badge bg-${statusColors[item.status] || 'secondary'} px-2 py-2 w-100`}>
+                    {statusIcons[item.status]} {item.status}
+                  </span>
+                </td>
+                <td className="px-3 py-3">
+                  <span className="text-muted" style={{ lineHeight: '1.5', display: 'block' }}>
+                    {item.reason}
+                  </span>
+                </td>
+                <td className="px-3 py-3">
+                  <EvidenceToggle text={item.evidence} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -453,85 +554,116 @@ export default function ResultsPanel({ data, onExportPDF, onExportExcel }) {
       {/* Export Buttons */}
       <div className="d-flex gap-2 mb-4 justify-content-end">
         <button
-          className="btn btn-outline-danger btn-sm"
+          className="btn btn-outline-danger fw-semibold shadow-sm"
           onClick={onExportPDF}
         >
           📄 Export PDF
         </button>
         <button
-          className="btn btn-outline-success btn-sm"
+          className="btn btn-outline-success fw-semibold shadow-sm"
           onClick={onExportExcel}
         >
           📊 Export Excel
         </button>
       </div>
 
-      {/* Bid Score Card */}
       <BidScoreCard complianceChecklist={data.complianceChecklist} />
-
-      {/* Risk Flag Summary */}
       <RiskFlagSummary complianceChecklist={data.complianceChecklist} />
-
-      {/* RFP Summary */}
       <SummaryCard summary={data.summary} />
 
-      {/* Deliverables */}
-      <div className="card mb-4 shadow-sm">
-        <div className="card-header bg-primary text-white">
-          <h5 className="mb-0">📦 Deliverables</h5>
+      {/* RE-STYLED Deliverables */}
+      <div className="card mb-4 shadow-sm border-0">
+        <div className="card-header bg-transparent border-bottom">
+          <h5 className="mb-0 fw-bold text-primary">📦 Project Deliverables</h5>
         </div>
-        <div className="card-body">
+        <div className="card-body bg-light p-4 rounded-bottom">
           {data.deliverables && data.deliverables.length > 0 ? (
-            <ul className="mb-0">
-              {data.deliverables.map((item, index) => (
-                <li key={index} className="py-1">{item}</li>
+            <div className="row g-4">
+              {data.deliverables.map((group, gIndex) => (
+                <div key={gIndex} className="col-12">
+                  <div className="card border shadow-sm h-100">
+                    <div className="card-header bg-white border-bottom py-3">
+                      <h6 className="fw-bold text-dark mb-0 d-flex align-items-center">
+                        <span className="badge bg-primary me-2 rounded-pill">{gIndex + 1}</span> 
+                        {group.parent}
+                      </h6>
+                    </div>
+                    {group.children && group.children.length > 0 && (
+                      <ul className="list-group list-group-flush">
+                        {group.children.map((child, cIndex) => (
+                          <DeliverableItem 
+                            key={cIndex} 
+                            text={child} 
+                            indexStr={`${gIndex + 1}.${cIndex + 1}`} 
+                          />
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
               ))}
-            </ul>
+            </div>
           ) : (
-            <p className="text-muted mb-0">No deliverables found.</p>
+            <div className="text-center py-4 text-muted border rounded bg-white">
+              <span className="fs-3 d-block mb-2">📭</span>
+              No deliverables found in this document.
+            </div>
           )}
         </div>
       </div>
 
-      {/* Evaluation Criteria */}
-      <div className="card mb-4 shadow-sm">
-        <div className="card-header bg-info text-white">
-          <h5 className="mb-0">📊 Evaluation Criteria</h5>
+      {/* RE-STYLED Evaluation Criteria */}
+      <div className="card mb-4 shadow-sm border-0">
+        <div className="card-header bg-transparent border-bottom">
+          <h5 className="mb-0 fw-bold text-info">📊 Evaluation Criteria</h5>
         </div>
-        <div className="card-body">
+        <div className="card-body bg-white p-0">
           {data.evaluationCriteria && data.evaluationCriteria.length > 0 ? (
-            <ul className="mb-0">
+            <ul className="list-group list-group-flush">
               {data.evaluationCriteria.map((item, index) => (
-                <li key={index} className="py-1">{item}</li>
+                <li key={index} className="list-group-item py-3 px-4 text-secondary d-flex align-items-center">
+                  <span className="badge bg-info text-dark rounded-circle me-3 py-2 px-2">{index + 1}</span>
+                  <span className="fw-semibold">{item}</span>
+                </li>
               ))}
             </ul>
           ) : (
-            <p className="text-muted mb-0">No evaluation criteria found.</p>
+            <div className="text-center py-5 text-muted">
+              No explicit evaluation criteria found.
+            </div>
           )}
         </div>
       </div>
 
-      {/* Compliance Checklist */}
-      <div className="card shadow-sm">
-        <div className="card-header bg-dark text-white">
-          <h5 className="mb-0">✅ Compliance Checklist</h5>
+      {/* Compliance Checklist Table */}
+      <div className="card shadow-sm mb-5 border-0">
+        <div className="card-header bg-dark text-white border-0 py-3">
+          <h5 className="mb-0 fw-bold">✅ Department Compliance Checklist</h5>
         </div>
-        <div className="card-body">
-          <ul className="nav nav-tabs mb-3">
-            {departments.map((dept) => (
-              <li className="nav-item" key={dept.key}>
-                <button
-                  className={`nav-link ${activeTab === dept.key ? 'active' : ''}`}
-                  onClick={() => setActiveTab(dept.key)}
-                >
-                  {dept.label}
-                </button>
-              </li>
-            ))}
-          </ul>
-          <DepartmentChecklist
-            items={data.complianceChecklist?.[activeTab]}
-          />
+        <div className="card-body p-0 bg-white border border-top-0 rounded-bottom"> 
+          {/* Tabs */}
+          <div className="px-3 pt-3 bg-light border-bottom">
+            <ul className="nav nav-tabs border-bottom-0">
+              {departments.map((dept) => (
+                <li className="nav-item" key={dept.key}>
+                  <button
+                    className={`nav-link border-0 ${activeTab === dept.key ? 'active fw-bold text-dark border-bottom border-dark border-3' : 'text-muted'}`}
+                    onClick={() => setActiveTab(dept.key)}
+                    style={{ backgroundColor: 'transparent', borderRadius: '0' }}
+                  >
+                    {dept.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+          
+          {/* Table Content */}
+          <div className="pt-2">
+            <DepartmentChecklist
+              items={data.complianceChecklist?.[activeTab]}
+            />
+          </div>
         </div>
       </div>
 
