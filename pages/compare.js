@@ -9,9 +9,9 @@ function getDecision(complianceChecklist) {
     ...(complianceChecklist?.technical || []),
   ]
   const hasNoGo = allItems.some(item => item.status === 'NO-GO')
-  const hasReview = allItems.some(item => item.status === 'REVIEW')
+  const hasEscalate = allItems.some(item => item.status === 'ESCALATE')
   if (hasNoGo) return { label: 'REJECT', color: 'danger' }
-  if (hasReview) return { label: 'ESCALATE', color: 'warning' }
+  if (hasEscalate) return { label: 'ESCALATE', color: 'warning' }
   return { label: 'PROCEED', color: 'success' }
 }
 
@@ -25,7 +25,7 @@ function getCounts(complianceChecklist) {
   return {
     go: allItems.filter(i => i.status === 'GO').length,
     noGo: allItems.filter(i => i.status === 'NO-GO').length,
-    review: allItems.filter(i => i.status === 'REVIEW').length,
+    escalate: allItems.filter(i => i.status === 'ESCALATE').length,
     total: allItems.length,
   }
 }
@@ -41,7 +41,7 @@ function getBidScore(complianceChecklist) {
   const maxPoints = allItems.length * 2
   const earned = allItems.reduce((sum, item) => {
     if (item.status === 'GO') return sum + 2
-    if (item.status === 'REVIEW') return sum + 1
+    if (item.status === 'ESCALATE') return sum + 1
     return sum
   }, 0)
   return Math.round((earned / maxPoints) * 100)
@@ -88,7 +88,7 @@ export default function Compare() {
 
     if (!idsParam) {
       setError('No RFPs selected for comparison.')
-      setLoading(false)
+      setTimeout(() => setLoading(false), 300)
       return
     }
 
@@ -96,14 +96,14 @@ export default function Compare() {
 
     if (ids.length < 2) {
       setError('Please select at least 2 RFPs to compare.')
-      setLoading(false)
+      setTimeout(() => setLoading(false), 300)
       return
     }
 
     const stored = localStorage.getItem('bidlens_history')
     if (!stored) {
       setError('No history found. Please analyze some RFPs first.')
-      setLoading(false)
+      setTimeout(() => setLoading(false), 300)
       return
     }
 
@@ -114,12 +114,12 @@ export default function Compare() {
 
     if (selected.length < 2) {
       setError('Could not find the selected RFPs in history.')
-      setLoading(false)
+      setTimeout(() => setLoading(false), 300)
       return
     }
 
     setEntries(selected)
-    setLoading(false)
+    setTimeout(() => setLoading(false), 300)
   }, [])
 
   if (loading) {
@@ -291,14 +291,14 @@ export default function Compare() {
                     })}
                   </tr>
 
-                  {/* REVIEW Count */}
+                  {/* ESCALATE Count */}
                   <tr>
-                    <td className="compare-label-cell">⚠️ REVIEW Items</td>
+                    <td className="compare-label-cell">⚠️ ESCALATE Items</td>
                     {entries.map((entry, i) => {
-                      const isBest = counts[i].review === Math.min(...counts.map(c => c.review))
+                      const isBest = counts[i].escalate === Math.min(...counts.map(c => c.escalate))
                       return (
                         <td key={i} className={`compare-value-cell ${isBest ? 'compare-best' : ''}`}>
-                          <span className="text-warning fw-bold fs-5">{counts[i].review}</span>
+                          <span className="text-warning fw-bold fs-5">{counts[i].escalate}</span>
                         </td>
                       )
                     })}
@@ -354,7 +354,10 @@ export default function Compare() {
                   <tr>
                     <td className="compare-label-cell">📦 Deliverables</td>
                     {entries.map((entry, i) => {
-                      const count = entry.deliverables?.length || 0
+                      // Calculate total deliverables across all parent groups
+                      const count = (entry.deliverables || []).reduce((sum, group) => {
+                        return sum + (group.children ? group.children.length : 0);
+                      }, 0);
                       return (
                         <td key={i} className="compare-value-cell">
                           {count} items
@@ -450,14 +453,31 @@ export default function Compare() {
             <div className="row">
               {entries.map((entry, i) => (
                 <div key={i} className={`col-md-${Math.floor(12 / entries.length)}`}>
-                  <h6 className="fw-bold text-primary">
+                  <h6 className="fw-bold text-primary mb-3">
                     {entry.summary?.projectTitle || entry.fileName}
                   </h6>
-                  <ul className="small">
-                    {(entry.deliverables || []).map((d, j) => (
-                      <li key={j} className="mb-1">{d}</li>
+                  <div className="small">
+                    {(entry.deliverables || []).map((group, gIndex) => (
+                      <div key={gIndex} className="mb-3">
+                        <div className="fw-semibold text-dark mb-1">
+                          {gIndex + 1}. {group.parent}
+                        </div>
+                        {group.children && group.children.length > 0 && (
+                          <ul className="text-muted ms-3 mb-0 ps-0 list-unstyled">
+                            {group.children.map((child, cIndex) => (
+                              <li key={cIndex} className="mb-1">
+                                <span className="me-2 text-secondary">{gIndex + 1}.{cIndex + 1}</span>
+                                {child}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     ))}
-                  </ul>
+                    {(!entry.deliverables || entry.deliverables.length === 0) && (
+                      <span className="text-muted fst-italic">No deliverables found.</span>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
