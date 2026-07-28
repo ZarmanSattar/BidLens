@@ -2,6 +2,7 @@ import { useState } from 'react'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
+import { downloadJsonExport } from '../utils/exportToJson'
 
 const statusColors = {
   'GO': 'success',
@@ -564,6 +565,12 @@ export default function ResultsPanel({ data, onExportPDF, onExportExcel }) {
           onClick={onExportExcel}
         >
           📊 Export Excel
+        </button>
+        <button
+          className="btn btn-outline-primary fw-semibold shadow-sm"
+          onClick={() => downloadJsonExport(data)}
+        >
+          🗂️ Export JSON
         </button>
       </div>
 

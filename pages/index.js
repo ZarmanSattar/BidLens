@@ -292,8 +292,14 @@ export default function Home() {
           fileName: file.name,
           analyzedAt: new Date().toISOString(),
           summary: data.summary,
+          executive_summary: data.executive_summary,
+          key_requirements: data.key_requirements,
           deliverables: data.deliverables,
           evaluationCriteria: data.evaluationCriteria,
+          risks: data.risks,
+          timeline: data.timeline,
+          go_nogo: data.go_nogo,
+          sections_analyzed: data.sections_analyzed,
           complianceChecklist: data.complianceChecklist,
         }
         const existing = localStorage.getItem('bidlens_history')

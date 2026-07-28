@@ -2875,6 +2875,21 @@ function normalizeDepartments(checklist, sourceText) {
           )
         }
 
+        // Additive strategic fields for the JSON export. These never
+        // alter task/status/reason/evidence or the decision logic above;
+        // safe fallbacks are applied when the AI omits them.
+        normalized.risk_level = normalizeRiskLevel(
+          rawItem.risk_level
+        )
+
+        normalized.mitigation_strategy = normalizeStrategyText(
+          rawItem.mitigation_strategy
+        )
+
+        normalized.impact_on_bid_strategy = normalizeStrategyText(
+          rawItem.impact_on_bid_strategy
+        )
+
         return normalized
       }
     )
@@ -3404,6 +3419,273 @@ function hasExplicitEvaluationCriteria(sourceText) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Additive normalizers for the new JSON-export schema fields (Phase 1).
+// These only add new fields; they never touch summary/deliverables/
+// evaluationCriteria/complianceChecklist decision logic. Function
+// declarations are hoisted, so these are available to normalizeDepartments
+// above as well.
+// ---------------------------------------------------------------------------
+
+function normalizeExecutiveSummary(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+
+  if (
+    !text ||
+    /^(?:null|n\/?a|none|not specified|unknown)$/i.test(text)
+  ) {
+    return ''
+  }
+
+  return text
+}
+
+function normalizeRiskLevel(value) {
+  const level = String(value || '').trim().toLowerCase()
+
+  if (level === 'high') {
+    return 'High'
+  }
+
+  if (level === 'low') {
+    return 'Low'
+  }
+
+  return 'Medium'
+}
+
+function normalizeStrategyText(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+
+  if (
+    !text ||
+    /^(?:null|n\/?a|none|not specified|unknown)$/i.test(text)
+  ) {
+    return 'Not specified'
+  }
+
+  return text
+}
+
+function normalizeSeverity(value) {
+  const severity = String(value || '').trim().toLowerCase()
+
+  if (severity === 'high') {
+    return 'High'
+  }
+
+  if (severity === 'low') {
+    return 'Low'
+  }
+
+  return 'Medium'
+}
+
+function normalizeRisks(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const result = []
+
+  for (const item of value) {
+    if (!item || typeof item !== 'object') {
+      continue
+    }
+
+    const category = String(item.category || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    const description = String(item.description || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (!category && !description) {
+      continue
+    }
+
+    result.push({
+      category: category || 'General',
+      description: description || 'Not specified',
+      severity: normalizeSeverity(item.severity),
+    })
+  }
+
+  return result
+}
+
+function normalizeTimeline(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const result = []
+
+  for (const item of value) {
+    if (!item || typeof item !== 'object') {
+      continue
+    }
+
+    const dateReference = String(item.date_reference || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    const milestone = String(item.milestone || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (!dateReference && !milestone) {
+      continue
+    }
+
+    result.push({
+      date_reference: dateReference || 'Not specified',
+      milestone: milestone || 'Not specified',
+    })
+  }
+
+  return result
+}
+
+function normalizeGoNogo(value) {
+  const source =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? value
+      : {}
+
+  let score = Number(source.score)
+
+  if (!Number.isFinite(score)) {
+    score = 0
+  }
+
+  score = Math.max(0, Math.min(100, Math.round(score)))
+
+  const verdictRaw = String(source.verdict || '')
+    .trim()
+    .toLowerCase()
+
+  let verdict = 'Review'
+
+  if (/no[\s-]?go/.test(verdictRaw)) {
+    verdict = 'No-Go'
+  } else if (/^(?:go|proceed)$/.test(verdictRaw)) {
+    verdict = 'Go'
+  }
+
+  const summary = String(source.summary || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const reasons = Array.isArray(source.reasons)
+    ? source.reasons
+        .filter((reason) => reason && typeof reason === 'object')
+        .map((reason) => {
+          const factor = String(reason.factor || '')
+            .replace(/\s+/g, ' ')
+            .trim()
+
+          const detail = String(reason.detail || '')
+            .replace(/\s+/g, ' ')
+            .trim()
+
+          let weight = Number(reason.weight)
+
+          if (!Number.isFinite(weight)) {
+            weight = 0
+          }
+
+          return {
+            factor: factor || 'Not specified',
+            weight: Math.max(0, Math.round(weight)),
+            detail: detail || 'Not specified',
+          }
+        })
+        .filter(
+          (reason) =>
+            reason.factor !== 'Not specified' ||
+            reason.detail !== 'Not specified' ||
+            reason.weight > 0
+        )
+    : []
+
+  return {
+    score,
+    verdict,
+    summary: summary || 'Not specified',
+    reasons,
+  }
+}
+
+function summaryHasValue(summary) {
+  if (!summary || typeof summary !== 'object') {
+    return false
+  }
+
+  return Object.values(summary).some(
+    (value) =>
+      value !== null &&
+      value !== undefined &&
+      String(value).trim() !== ''
+  )
+}
+
+function buildSectionsAnalyzed(normalized) {
+  const sections = []
+
+  if (summaryHasValue(normalized.summary)) {
+    sections.push('summary')
+  }
+
+  if (normalized.executive_summary) {
+    sections.push('executive_summary')
+  }
+
+  if (
+    Array.isArray(normalized.key_requirements) &&
+    normalized.key_requirements.length > 0
+  ) {
+    sections.push('key_requirements')
+  }
+
+  if (
+    Array.isArray(normalized.deliverables) &&
+    normalized.deliverables.length > 0
+  ) {
+    sections.push('deliverables')
+  }
+
+  if (
+    Array.isArray(normalized.evaluationCriteria) &&
+    normalized.evaluationCriteria.length > 0
+  ) {
+    sections.push('evaluation_criteria')
+  }
+
+  if (Array.isArray(normalized.risks) && normalized.risks.length > 0) {
+    sections.push('risks')
+  }
+
+  if (
+    Array.isArray(normalized.timeline) &&
+    normalized.timeline.length > 0
+  ) {
+    sections.push('timeline')
+  }
+
+  // The compliance checklist is always populated (27 fixed items), and the
+  // strategic per-item fields are always attached to every item.
+  sections.push('compliance')
+  sections.push('strategic_checklist')
+
+  if (normalized.go_nogo && normalized.go_nogo.verdict) {
+    sections.push('go_nogo')
+  }
+
+  return sections
+}
+
 function normalizeAnalysis(analysis, sourceText) {
   const normalized =
     analysis &&
@@ -3448,6 +3730,24 @@ function normalizeAnalysis(analysis, sourceText) {
       normalized.complianceChecklist,
       sourceText
     )
+
+  // Additive JSON-export fields (Phase 1). Safe fallbacks are applied when
+  // the AI omits any of these, mirroring the existing fallback pattern.
+  normalized.executive_summary = normalizeExecutiveSummary(
+    normalized.executive_summary
+  )
+
+  normalized.key_requirements = normalizeStringArray(
+    normalized.key_requirements
+  )
+
+  normalized.risks = normalizeRisks(normalized.risks)
+
+  normalized.timeline = normalizeTimeline(normalized.timeline)
+
+  normalized.go_nogo = normalizeGoNogo(normalized.go_nogo)
+
+  normalized.sections_analyzed = buildSectionsAnalyzed(normalized)
 
   return normalized
 }
@@ -3567,6 +3867,44 @@ CHECKLIST SHAPE:
 
 ${getChecklistSpecification()}
 
+EXECUTIVE SUMMARY RULES:
+- Provide "executive_summary" as a 2-3 sentence plain-language overview of the RFP and the bid opportunity.
+- This is a separate field from the structured "summary" object; do not merge into it, rename it, or duplicate its values.
+- Base it only on the supplied RFP text.
+
+KEY REQUIREMENTS RULES:
+- Provide "key_requirements" as a flat array of strings listing the most critical must-do items a bidder must satisfy.
+- These are top-line "you must do X" statements and are distinct from deliverables and from the compliance checklist.
+- Return [] when no critical must-do items are clearly stated.
+
+RISKS RULES:
+- Provide "risks" as an array of general, project-level risk objects, not per-checklist-item risks.
+- Each risk object must have "category" (string), "description" (string), and "severity" of exactly "Low", "Medium", or "High".
+- Examples: firm-fixed-price exposure, manufacturer-authorization dependency, tight timelines, high insurance caps, single-award restrictions.
+- Return [] when no meaningful project-level risks can be identified from the text.
+
+TIMELINE RULES:
+- Provide "timeline" as an array of key-date objects extracted from the RFP text.
+- Each object must have "date_reference" (the date or date phrase) and "milestone" (what happens on that date).
+- Include issue date, pre-bid conference, question deadline, bid closing date, contract term dates, and invoicing timelines when stated.
+- Return [] when no dates are stated in the text.
+
+GO/NO-GO RULES:
+- Provide "go_nogo" as a separate weighted assessment used only for the JSON export.
+- This is NOT the compliance-checklist status logic; do not copy checklist GO/NO-GO/ESCALATE statuses into it.
+- "score" is a number from 0 to 100. "verdict" is exactly "Go", "No-Go", or "Review". "summary" is one or two sentences explaining the verdict.
+- "reasons" is an array of { "factor": string, "weight": number, "detail": string } objects, where the "weight" values sum to roughly 100.
+
+STRATEGIC CHECKLIST FIELD RULES:
+- For every checklist item, in addition to task, status, reason, and evidence, also return three new fields:
+  - "risk_level": exactly "Low", "Medium", or "High" for that individual item.
+  - "mitigation_strategy": one concrete suggested action to address or satisfy the item.
+  - "impact_on_bid_strategy": one sentence describing how this item affects the overall bid approach.
+- These three fields must never change the task, status, reason, or evidence values.
+
+SECTIONS ANALYZED RULES:
+- Provide "sections_analyzed" as a flat array of strings naming which sections you populated in this response (e.g. "summary", "deliverables", "compliance", "risks", "timeline", "key_requirements", "go_nogo", "strategic_checklist").
+
 OUTPUT RULES:
 - Return one valid JSON object only.
 - Do not use markdown.
@@ -3584,6 +3922,10 @@ OUTPUT RULES:
     "projectDuration": null,
     "rfpNumber": null
   },
+  "executive_summary": "string",
+  "key_requirements": [
+    "string"
+  ],
   "deliverables": [
     {
       "parent": "string",
@@ -3593,13 +3935,41 @@ OUTPUT RULES:
     }
   ],
   "evaluationCriteria": [],
+  "risks": [
+    {
+      "category": "string",
+      "description": "string",
+      "severity": "Low or Medium or High"
+    }
+  ],
+  "timeline": [
+    {
+      "date_reference": "string",
+      "milestone": "string"
+    }
+  ],
+  "go_nogo": {
+    "score": 0,
+    "verdict": "Go or No-Go or Review",
+    "summary": "string",
+    "reasons": [
+      {
+        "factor": "string",
+        "weight": 0,
+        "detail": "string"
+      }
+    ]
+  },
   "complianceChecklist": {
     "financial": [
       {
         "task": "string",
         "status": "GO or NO-GO or ESCALATE",
         "reason": "string",
-        "evidence": "string"
+        "evidence": "string",
+        "risk_level": "Low or Medium or High",
+        "mitigation_strategy": "string",
+        "impact_on_bid_strategy": "string"
       }
     ],
     "legal": [
@@ -3607,7 +3977,10 @@ OUTPUT RULES:
         "task": "string",
         "status": "ESCALATE",
         "reason": "string",
-        "evidence": "string"
+        "evidence": "string",
+        "risk_level": "Low or Medium or High",
+        "mitigation_strategy": "string",
+        "impact_on_bid_strategy": "string"
       }
     ],
     "operations": [
@@ -3615,7 +3988,10 @@ OUTPUT RULES:
         "task": "string",
         "status": "ESCALATE",
         "reason": "string",
-        "evidence": "string"
+        "evidence": "string",
+        "risk_level": "Low or Medium or High",
+        "mitigation_strategy": "string",
+        "impact_on_bid_strategy": "string"
       }
     ],
     "technical": [
@@ -3623,10 +3999,16 @@ OUTPUT RULES:
         "task": "string",
         "status": "ESCALATE",
         "reason": "string",
-        "evidence": "string"
+        "evidence": "string",
+        "risk_level": "Low or Medium or High",
+        "mitigation_strategy": "string",
+        "impact_on_bid_strategy": "string"
       }
     ]
-  }
+  },
+  "sections_analyzed": [
+    "string"
+  ]
 }`
 }
 
@@ -3903,7 +4285,7 @@ async function createGroqCompletion(
         ],
 
         temperature: 0.1,
-        max_tokens: 3200,
+        max_tokens: 5000,
       })
     } catch (error) {
       const status = getErrorStatus(error)
