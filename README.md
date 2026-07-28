@@ -265,7 +265,7 @@ bidlens/
 
 <div align="center">
 
-Built with ☕ and a lot of debugging by **Zarman Sattar**
-SPS Internship Deliverable · 2026
+Built  by **Zarman Sattar**
+SPS Internship  · 2026
 
 </div>
