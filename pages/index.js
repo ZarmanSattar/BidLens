@@ -298,6 +298,9 @@ export default function Home() {
 
     startProgressSimulation()
 
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 90000)
+
     try {
       const formData = new FormData()
       formData.append('file', file)
@@ -305,6 +308,7 @@ export default function Home() {
       const response = await fetch('/api/analyze', {
         method: 'POST',
         body: formData,
+        signal: controller.signal,
       })
 
       const data = await response.json()
@@ -362,8 +366,13 @@ export default function Home() {
 
     } catch (err) {
       stopProgressSimulation(false)
-      setError('Network error. Make sure the server is running.')
+      if (err.name === 'AbortError') {
+        setError('The analysis is taking longer than expected. Please try again - if this keeps happening, the RFP may be too large or complex.')
+      } else {
+        setError('Network error. Make sure the server is running.')
+      }
     } finally {
+      clearTimeout(timeoutId)
       setLoading(false)
     }
   }

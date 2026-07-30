@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/router'
+import { supabase } from '../lib/supabase/client'
 
 function getDecision(complianceChecklist) {
   const allItems = [
@@ -76,51 +78,97 @@ function getBestIndex(entries, getValue, higherIsBetter = true) {
 }
 
 export default function Compare() {
+  const router = useRouter()
+  const [session, setSession] = useState(null)
+  const [checkingSession, setCheckingSession] = useState(true)
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (typeof window === 'undefined') return
+    supabase.auth.getSession().then(({ data }) => {
+      if (!data.session) {
+        router.push('/login')
+      } else {
+        setSession(data.session)
+        setCheckingSession(false)
+      }
+    })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!newSession) {
+        router.push('/login')
+      } else {
+        setSession(newSession)
+      }
+    })
+    return () => listener.subscription.unsubscribe()
+  }, [router])
 
-    const params = new URLSearchParams(window.location.search)
-    const idsParam = params.get('ids')
+  useEffect(() => {
+    if (!session || typeof window === 'undefined') return
 
-    if (!idsParam) {
-      setError('No RFPs selected for comparison.')
-      setTimeout(() => setLoading(false), 300)
-      return
+    async function loadEntries() {
+      const params = new URLSearchParams(window.location.search)
+      const idsParam = params.get('ids')
+
+      if (!idsParam) {
+        setError('No RFPs selected for comparison.')
+        setLoading(false)
+        return
+      }
+
+      const ids = idsParam.split(',')
+
+      if (ids.length < 2) {
+        setError('Please select at least 2 RFPs to compare.')
+        setLoading(false)
+        return
+      }
+
+      const { data, error: fetchError } = await supabase
+        .from('analyses')
+        .select(`
+          id,
+          created_at,
+          result,
+          rfps ( id, title, original_filename )
+        `)
+        .in('id', ids)
+
+      if (fetchError) {
+        setError('Failed to load comparison: ' + fetchError.message)
+        setLoading(false)
+        return
+      }
+
+      if (!data || data.length < 2) {
+        setError('Could not find the selected RFPs in history.')
+        setLoading(false)
+        return
+      }
+
+      // Preserve the order the ids were passed in, not whatever order the DB returns
+      const byId = new Map(data.map(row => [row.id, row]))
+      const ordered = ids
+        .map(id => byId.get(id))
+        .filter(Boolean)
+        .map(row => ({
+          id: row.id,
+          fileName: row.rfps?.original_filename || row.rfps?.title,
+          analyzedAt: row.created_at,
+          ...row.result,
+        }))
+
+      setEntries(ordered)
+      setLoading(false)
     }
 
-    const ids = idsParam.split(',').map(id => parseInt(id))
+    loadEntries()
+  }, [session])
 
-    if (ids.length < 2) {
-      setError('Please select at least 2 RFPs to compare.')
-      setTimeout(() => setLoading(false), 300)
-      return
-    }
-
-    const stored = localStorage.getItem('bidlens_history')
-    if (!stored) {
-      setError('No history found. Please analyze some RFPs first.')
-      setTimeout(() => setLoading(false), 300)
-      return
-    }
-
-    const history = JSON.parse(stored)
-    const selected = ids
-      .map(id => history.find(e => e.id === id))
-      .filter(Boolean)
-
-    if (selected.length < 2) {
-      setError('Could not find the selected RFPs in history.')
-      setTimeout(() => setLoading(false), 300)
-      return
-    }
-
-    setEntries(selected)
-    setTimeout(() => setLoading(false), 300)
-  }, [])
+  if (checkingSession) {
+    return <div className="container py-5">Loading...</div>
+  }
 
   if (loading) {
     return (
@@ -189,7 +237,6 @@ export default function Compare() {
           Comparing {entries.length} RFPs side by side. Green highlights indicate the better value.
         </p>
 
-        {/* Recommendation Banner */}
         <div className="alert alert-success mb-4 d-flex align-items-center gap-3">
           <span style={{ fontSize: '1.8rem' }}>🏆</span>
           <div>
@@ -202,7 +249,6 @@ export default function Compare() {
           </div>
         </div>
 
-        {/* Main Comparison Table */}
         <div className="card shadow-sm mb-4">
           <div className="card-header bg-dark text-white">
             <h5 className="mb-0">📊 Side-by-Side Comparison</h5>
@@ -228,7 +274,6 @@ export default function Compare() {
                 </thead>
                 <tbody>
 
-                  {/* Bid Score */}
                   <tr>
                     <td className="compare-label-cell">🎯 Bid Score</td>
                     {entries.map((entry, i) => {
@@ -249,7 +294,6 @@ export default function Compare() {
                     })}
                   </tr>
 
-                  {/* Decision */}
                   <tr>
                     <td className="compare-label-cell">📋 Decision</td>
                     {entries.map((entry, i) => {
@@ -262,7 +306,6 @@ export default function Compare() {
                     })}
                   </tr>
 
-                  {/* GO Count */}
                   <tr>
                     <td className="compare-label-cell">✅ GO Items</td>
                     {entries.map((entry, i) => {
@@ -276,7 +319,6 @@ export default function Compare() {
                     })}
                   </tr>
 
-                  {/* NO-GO Count */}
                   <tr>
                     <td className="compare-label-cell">🚫 NO-GO Items</td>
                     {entries.map((entry, i) => {
@@ -291,7 +333,6 @@ export default function Compare() {
                     })}
                   </tr>
 
-                  {/* ESCALATE Count */}
                   <tr>
                     <td className="compare-label-cell">⚠️ ESCALATE Items</td>
                     {entries.map((entry, i) => {
@@ -304,13 +345,11 @@ export default function Compare() {
                     })}
                   </tr>
 
-                  {/* Divider */}
                   <tr className="table-secondary">
                     <td className="compare-label-cell fw-bold">RFP Details</td>
                     {entries.map((_, i) => <td key={i} className="compare-value-cell"></td>)}
                   </tr>
 
-                  {/* RFP Number */}
                   <tr>
                     <td className="compare-label-cell">📄 RFP Number</td>
                     {entries.map((entry, i) => (
@@ -320,7 +359,6 @@ export default function Compare() {
                     ))}
                   </tr>
 
-                  {/* Contract Value */}
                   <tr>
                     <td className="compare-label-cell">💰 Contract Value</td>
                     {entries.map((entry, i) => (
@@ -330,7 +368,6 @@ export default function Compare() {
                     ))}
                   </tr>
 
-                  {/* Submission Deadline */}
                   <tr>
                     <td className="compare-label-cell">📅 Deadline</td>
                     {entries.map((entry, i) => (
@@ -340,7 +377,6 @@ export default function Compare() {
                     ))}
                   </tr>
 
-                  {/* Project Duration */}
                   <tr>
                     <td className="compare-label-cell">⏱️ Duration</td>
                     {entries.map((entry, i) => (
@@ -350,11 +386,9 @@ export default function Compare() {
                     ))}
                   </tr>
 
-                  {/* Deliverables Count */}
                   <tr>
                     <td className="compare-label-cell">📦 Deliverables</td>
                     {entries.map((entry, i) => {
-                      // Calculate total deliverables across all parent groups
                       const count = (entry.deliverables || []).reduce((sum, group) => {
                         return sum + (group.children ? group.children.length : 0);
                       }, 0);
@@ -366,13 +400,11 @@ export default function Compare() {
                     })}
                   </tr>
 
-                  {/* Divider */}
                   <tr className="table-secondary">
                     <td className="compare-label-cell fw-bold">Financial Highlights</td>
                     {entries.map((_, i) => <td key={i} className="compare-value-cell"></td>)}
                   </tr>
 
-                  {/* Payment Terms */}
                   <tr>
                     <td className="compare-label-cell">💳 Payment Terms</td>
                     {entries.map((entry, i) => {
@@ -394,7 +426,6 @@ export default function Compare() {
                     })}
                   </tr>
 
-                  {/* Insurance */}
                   <tr>
                     <td className="compare-label-cell">🛡️ Insurance</td>
                     {entries.map((entry, i) => {
@@ -416,7 +447,6 @@ export default function Compare() {
                     })}
                   </tr>
 
-                  {/* Bid Bond */}
                   <tr>
                     <td className="compare-label-cell">📝 Bid Bond</td>
                     {entries.map((entry, i) => {
@@ -444,7 +474,6 @@ export default function Compare() {
           </div>
         </div>
 
-        {/* Deliverables Comparison */}
         <div className="card shadow-sm mb-4">
           <div className="card-header bg-primary text-white">
             <h5 className="mb-0">📦 Deliverables Comparison</h5>
@@ -484,7 +513,6 @@ export default function Compare() {
           </div>
         </div>
 
-        {/* Back Button */}
         <div className="text-center">
           <Link href="/dashboard" className="btn btn-outline-secondary">
             ← Back to Dashboard

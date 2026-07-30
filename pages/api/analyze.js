@@ -9,6 +9,8 @@ export const config = {
   },
 }
 
+export const maxDuration = 60
+
 const NOT_SPECIFIED = 'Not specified in RFP'
 const MAX_RFP_TEXT_LENGTH = 18000
 
@@ -4318,6 +4320,8 @@ async function createGroqCompletion(
 }
 
 export default async function handler(req, res) {
+  const requestStart = Date.now()
+
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST')
 
@@ -4329,6 +4333,16 @@ export default async function handler(req, res) {
   if (!process.env.GROQ_API_KEY) {
     return res.status(500).json({
       error: 'GROQ_API_KEY is not configured',
+    })
+  }
+
+  const MAX_UPLOAD_BYTES = 15 * 1024 * 1024 // 15MB
+
+  const contentLength = Number(req.headers['content-length'])
+
+  if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES) {
+    return res.status(413).json({
+      error: 'File is too large. Please upload a PDF under 15MB.',
     })
   }
 
@@ -4367,6 +4381,7 @@ export default async function handler(req, res) {
     }
 
     const pdfData = await pdfParse(fileBuffer)
+    console.log('[analyze] pdf parse took', Date.now() - requestStart, 'ms')
     const sourceText = cleanText(pdfData.text)
 
     if (!sourceText) {
@@ -4390,6 +4405,7 @@ export default async function handler(req, res) {
       systemPrompt,
       userPrompt
     )
+    console.log('[analyze] groq call took', Date.now() - requestStart, 'ms (cumulative)')
 
     const rawResponse =
       completion?.choices?.[0]?.message?.content
@@ -4406,6 +4422,7 @@ export default async function handler(req, res) {
       sourceText
     )
 
+    console.log('[analyze] total request took', Date.now() - requestStart, 'ms')
     return res.status(200).json(analysis)
   } catch (error) {
     const status = getErrorStatus(error)
