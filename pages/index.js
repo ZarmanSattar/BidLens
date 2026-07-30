@@ -324,6 +324,12 @@ export default function Home() {
 
       // Save to Supabase (rfps + analyses), replacing the old localStorage write
       try {
+        // /api/analyze returns the document text alongside the analysis:
+        // sourceText as one string, pages as one string per page. Both belong
+        // on the rfps row only — splitting them off here keeps a second copy
+        // out of the analyses row.
+        const { sourceText, pages: pageTexts, ...analysis } = data
+
         const { data: rfpRow, error: rfpError } = await supabase
           .from('rfps')
           .insert({
@@ -331,6 +337,10 @@ export default function Home() {
             title: file.name,
             original_filename: file.name,
             status: 'analyzed',
+            raw_text: sourceText ?? null,
+            pages: Array.isArray(pageTexts) && pageTexts.length > 0
+              ? pageTexts
+              : null,
           })
           .select()
           .single()
@@ -343,7 +353,7 @@ export default function Home() {
             .insert({
               rfp_id: rfpRow.id,
               owner_id: session.user.id,
-              result: data,
+              result: analysis,
             })
 
           if (analysisError) {

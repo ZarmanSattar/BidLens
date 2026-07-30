@@ -1,7 +1,11 @@
-const Groq = require('groq-sdk')
 const pdfParse = require('pdf-parse')
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+const {
+  callGroqWithValidation,
+  getErrorStatus,
+} = require('../../lib/ai/groqHelper')
+
+const { extractPages } = require('../../lib/shredder/extractPages')
 
 export const config = {
   api: {
@@ -4226,97 +4230,14 @@ function parseJsonResponse(rawResponse) {
   )
 }
 
-function getErrorStatus(error) {
-  return Number(
-    error?.status ||
-      error?.statusCode ||
-      error?.response?.status ||
-      0
-  )
-}
-
-function getRetryAfterMs(error) {
-  const headers =
-    error?.headers || error?.response?.headers
-
-  let value = null
-
-  if (typeof headers?.get === 'function') {
-    value = headers.get('retry-after')
-  } else {
-    value =
-      headers?.['retry-after'] ||
-      headers?.['Retry-After']
-  }
-
-  const seconds = Number(value)
-
-  return Number.isFinite(seconds) && seconds > 0
-    ? seconds * 1000
-    : null
-}
-
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function createGroqCompletion(
-  systemPrompt,
-  userPrompt
-) {
-  const maxAttempts = 2
-
-  for (
-    let attempt = 1;
-    attempt <= maxAttempts;
-    attempt += 1
-  ) {
-    try {
-      return await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt,
-          },
-          {
-            role: 'user',
-            content: userPrompt,
-          },
-        ],
-
-        temperature: 0.1,
-        max_tokens: 5000,
-      })
-    } catch (error) {
-      const status = getErrorStatus(error)
-      const retryAfterMs = getRetryAfterMs(error)
-
-      const temporaryServerError = [
-        500,
-        502,
-        503,
-        504,
-      ].includes(status)
-
-      const shortRateLimit =
-        status === 429 &&
-        retryAfterMs &&
-        retryAfterMs <= 10000
-
-      const retryable =
-        temporaryServerError || shortRateLimit
-
-      if (!retryable || attempt === maxAttempts) {
-        throw error
-      }
-
-      await wait(retryAfterMs || 750 * attempt)
-    }
-  }
-
-  throw new Error('Groq request failed')
+// Top-level keys that must be present and correctly typed for the response to
+// be a usable RFP analysis at all. Everything else the model returns is left
+// out of the schema on purpose: normalizeAnalysis already repairs those fields
+// (filling arrays, coercing types, rebuilding all 27 checklist items), so
+// rejecting on them here would be stricter than the behavior it replaces.
+const ANALYSIS_SCHEMA = {
+  summary: 'object',
+  complianceChecklist: 'object',
 }
 
 export default async function handler(req, res) {
@@ -4384,6 +4305,28 @@ export default async function handler(req, res) {
     console.log('[analyze] pdf parse took', Date.now() - requestStart, 'ms')
     const sourceText = cleanText(pdfData.text)
 
+    // Second, page-tracked parse of the same buffer, purely so the client can
+    // persist rfps.pages. The parse above joins every page with the same
+    // "\n\n" that separates paragraphs, and page boundaries cannot be
+    // recovered from the result afterwards — so the only way to get them is
+    // to parse again with a pagerender callback. Measured around half a
+    // second on a 44-page RFP, which is noise next to the Groq call.
+    //
+    // Deliberately non-fatal: this is supplementary persistence data, and an
+    // analysis that already succeeded should not fail because of it.
+    let pageTexts = null
+
+    try {
+      const extracted = await extractPages(fileBuffer)
+
+      pageTexts = extracted.pages.map((entry) => entry.text)
+
+      console.log('[analyze] page-tracked parse took',
+        Date.now() - requestStart, 'ms (cumulative),', pageTexts.length, 'pages')
+    } catch (pageError) {
+      console.error('[analyze] page-tracked parse failed:', pageError?.message)
+    }
+
     if (!sourceText) {
       return res.status(400).json({
         error: 'PDF appears to be empty or unreadable',
@@ -4401,21 +4344,60 @@ export default async function handler(req, res) {
       'Analyze the following RFP text and return the required JSON object.\n\n' +
       rfpText
 
-    const completion = await createGroqCompletion(
-      systemPrompt,
-      userPrompt
-    )
+    const {
+      data: parsedAnalysis,
+      usedFallback,
+      reason: fallbackReason,
+      errors: shapeErrors,
+    } = await callGroqWithValidation({
+      model: 'llama-3.3-70b-versatile',
+
+      messages: [
+        {
+          role: 'system',
+          content: systemPrompt,
+        },
+        {
+          role: 'user',
+          content: userPrompt,
+        },
+      ],
+
+      temperature: 0.1,
+      maxTokens: 5000,
+
+      // One retry, matching the previous inline behavior. The 60s function
+      // budget does not leave room for more.
+      maxRetries: 1,
+
+      schema: ANALYSIS_SCHEMA,
+
+      // parseJsonResponse keeps the truncation-recovery logic the default
+      // parser lacks, which matters because max_tokens does truncate real
+      // responses on long RFPs.
+      parse: parseJsonResponse,
+
+      // Built only if the model output is unusable, since it re-scans the
+      // whole source document.
+      fallback: () => normalizeAnalysis({}, sourceText),
+    })
+
     console.log('[analyze] groq call took', Date.now() - requestStart, 'ms (cumulative)')
 
-    const rawResponse =
-      completion?.choices?.[0]?.message?.content
+    if (usedFallback) {
+      // A structurally unusable response yields an all-"Not specified"
+      // analysis. Returning that would look like a completed bid assessment,
+      // so surface the failure and let the user re-run instead.
+      console.error('[analyze] unusable AI response:', {
+        reason: fallbackReason,
+        errors: shapeErrors,
+      })
 
-    if (!rawResponse) {
-      throw new Error('Groq returned an empty response')
+      return res.status(502).json({
+        error:
+          'The AI returned an invalid response. Please run the analysis again.',
+      })
     }
-
-    const parsedAnalysis =
-      parseJsonResponse(rawResponse)
 
     const analysis = normalizeAnalysis(
       parsedAnalysis,
@@ -4423,7 +4405,15 @@ export default async function handler(req, res) {
     )
 
     console.log('[analyze] total request took', Date.now() - requestStart, 'ms')
-    return res.status(200).json(analysis)
+
+    // sourceText and pages are for persistence, not for display. sourceText
+    // is the FULL extracted document (not the section-trimmed rfpText sent to
+    // Groq) and lands in rfps.raw_text; pages is the same document split per
+    // page and lands in rfps.pages, which is what gives the shredder real
+    // page numbers. Consumers of the analysis itself ignore both keys:
+    // ResultsPanel reads named fields and buildJsonExport maps an explicit
+    // key list.
+    return res.status(200).json({ ...analysis, sourceText, pages: pageTexts })
   } catch (error) {
     const status = getErrorStatus(error)
 
