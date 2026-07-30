@@ -256,7 +256,21 @@ export default async function handler(req, res) {
     }
 
     // §4.2 - AI classification in batches.
-    const { results, stats } = await classifyRequirements(candidates)
+    const { results, stats, aborted } = await classifyRequirements(candidates)
+
+    // A rate-limit abort with nothing classified means there is no work to
+    // keep — say so plainly instead of writing a run that contains nothing.
+    if (aborted && results.length === 0) {
+      return res.status(429).json({
+        error:
+          'Groq quota exhausted before any requirements could be classified. ' +
+          `Retry in about ${Math.ceil(aborted.retryAfterMs / 60000)} minute(s).`,
+        rfp_id: rfpId,
+        retry_after_seconds: Math.ceil(aborted.retryAfterMs / 1000),
+        candidates: candidates.length,
+        inserted: 0,
+      })
+    }
 
     console.log('[shredder] classified', stats.total, 'candidates in',
       stats.batches, 'batches (', stats.failedBatches, 'failed ) at',
@@ -274,6 +288,11 @@ export default async function handler(req, res) {
       role: result.role ?? null,
       department: result.department ?? null,
       confidence: toStoredConfidence(result.confidence),
+      // A degraded row carries confidence 0, which means "never classified",
+      // not "classified with low certainty" — classification_error is what
+      // tells those apart after the fact.
+      needs_review: result.needsReview === true,
+      classification_error: result.classificationError ?? null,
     }))
 
     const inserted = []
@@ -284,7 +303,10 @@ export default async function handler(req, res) {
       const { data, error } = await supabaseAdmin
         .from('requirements')
         .insert(slice)
-        .select('id, req_number, page, section, role, department, confidence')
+        .select(
+        'id, req_number, page, section, role, department, confidence, ' +
+          'needs_review, classification_error'
+      )
 
       if (error) {
         // Report what did land rather than pretending the run was atomic —
@@ -315,6 +337,20 @@ export default async function handler(req, res) {
       inserted: inserted.length,
       first_req_number: rows[0]?.req_number || null,
       last_req_number: rows[rows.length - 1]?.req_number || null,
+      // False when the run stopped early — the requirement set is partial and
+      // the remaining candidates were never sent, not classified and failed.
+      complete: !aborted,
+      quota: aborted
+        ? {
+            reason: aborted.reason,
+            message: aborted.message,
+            retry_after_seconds: Math.ceil(aborted.retryAfterMs / 1000),
+            batches_completed: stats.batches,
+            batches_planned: stats.plannedBatches,
+            batches_not_attempted: aborted.batchesNotAttempted,
+            candidates_not_attempted: aborted.candidatesNotAttempted,
+          }
+        : null,
       classification: stats,
       needs_review: results.filter((result) => result.needsReview).length,
       requirements: inserted,
