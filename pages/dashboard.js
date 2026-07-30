@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/router'
 import ResultsPanel from '../components/ResultsPanel'
+import { supabase } from '../lib/supabase/client'
 
 function exportToPDF(results) {
   import('jspdf').then(({ default: jsPDF }) => {
@@ -31,7 +33,6 @@ function exportToPDF(results) {
         })
       }
 
-      // Handle Nested Deliverables structure safely
       const deliverableRows = []
       if (results.deliverables && results.deliverables.length > 0) {
         results.deliverables.forEach((group, gIndex) => {
@@ -77,7 +78,7 @@ function exportToPDF(results) {
         { key: 'operations', label: 'Operations', color: [108, 117, 125] },
         { key: 'technical', label: 'Technical', color: [13, 110, 253] },
       ]
-      
+
       for (const dept of departments) {
         const items = results.complianceChecklist?.[dept.key] || []
         if (items.length === 0) continue
@@ -134,7 +135,6 @@ function exportToExcel(results) {
     summarySheet['!cols'] = [{ wch: 25 }, { wch: 50 }]
     XLSX.utils.book_append_sheet(workbook, summarySheet, 'Summary')
 
-    // Handle Nested Deliverables structure safely for Excel
     const deliverableData = [['Level', 'Deliverable']]
     if (results.deliverables && results.deliverables.length > 0) {
       results.deliverables.forEach((group, gIndex) => {
@@ -237,25 +237,85 @@ function getDaysRemaining(deadlineStr) {
 }
 
 export default function Dashboard() {
+  const router = useRouter()
+  const [session, setSession] = useState(null)
+  const [checkingSession, setCheckingSession] = useState(true)
   const [history, setHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [dbError, setDbError] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
   const [selectedIds, setSelectedIds] = useState([])
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('bidlens_history')
-      if (stored) {
-        const parsed = JSON.parse(stored)
-        const sorted = parsed.sort((a, b) => b.id - a.id)
-        setHistory(sorted)
+    supabase.auth.getSession().then(({ data }) => {
+      if (!data.session) {
+        router.push('/login')
+      } else {
+        setSession(data.session)
+        setCheckingSession(false)
       }
-    }
-  }, [])
+    })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!newSession) {
+        router.push('/login')
+      } else {
+        setSession(newSession)
+      }
+    })
+    return () => listener.subscription.unsubscribe()
+  }, [router])
 
-  function handleDelete(id) {
-    const updated = history.filter(entry => entry.id !== id)
+  useEffect(() => {
+    if (!session) return
+
+    async function loadHistory() {
+      setHistoryLoading(true)
+      const { data, error } = await supabase
+        .from('analyses')
+        .select(`
+          id,
+          created_at,
+          result,
+          rfps ( id, title, original_filename )
+        `)
+        .order('created_at', { ascending: false })
+
+      if (error) {
+        setDbError('Failed to load history: ' + error.message)
+        setHistoryLoading(false)
+        return
+      }
+
+      const mapped = (data || []).map(row => ({
+        id: row.id,
+        rfpId: row.rfps?.id,
+        fileName: row.rfps?.original_filename || row.rfps?.title,
+        analyzedAt: row.created_at,
+        ...row.result,
+      }))
+      setHistory(mapped)
+      setHistoryLoading(false)
+    }
+
+    loadHistory()
+  }, [session])
+
+  async function handleSignOut() {
+    await supabase.auth.signOut()
+  }
+
+  async function handleDelete(id) {
+    const entry = history.find(e => e.id === id)
+    if (!entry) return
+
+    const { error } = await supabase.from('rfps').delete().eq('id', entry.rfpId)
+    if (error) {
+      setDbError('Failed to delete: ' + error.message)
+      return
+    }
+
+    const updated = history.filter(e => e.id !== id)
     setHistory(updated)
-    localStorage.setItem('bidlens_history', JSON.stringify(updated))
     if (expandedId === id) setExpandedId(null)
     setSelectedIds(prev => prev.filter(sid => sid !== id))
   }
@@ -264,9 +324,18 @@ export default function Dashboard() {
     setExpandedId(prev => prev === id ? null : id)
   }
 
-  function handleClearAll() {
+  async function handleClearAll() {
     if (confirm('Are you sure you want to clear all history?')) {
-      localStorage.removeItem('bidlens_history')
+      const { error } = await supabase
+        .from('rfps')
+        .delete()
+        .eq('owner_id', session.user.id)
+
+      if (error) {
+        setDbError('Failed to clear history: ' + error.message)
+        return
+      }
+
       setHistory([])
       setExpandedId(null)
       setSelectedIds([])
@@ -293,6 +362,10 @@ export default function Dashboard() {
     .filter(e => e.daysRemaining !== null)
     .sort((a, b) => a.daysRemaining - b.daysRemaining)
 
+  if (checkingSession) {
+    return <div className="container py-5">Loading...</div>
+  }
+
   return (
     <>
       <nav className="navbar navbar-dark bg-dark px-4">
@@ -300,16 +373,16 @@ export default function Dashboard() {
           Bid<span style={{ color: '#0d6efd' }}>Lens</span>
         </span>
         <div className="d-flex align-items-center gap-3">
-          <span className="text-secondary small">Dashboard</span>
+          <span className="text-secondary small">{session?.user?.email}</span>
           <Link href="/" className="btn btn-primary btn-sm">
             🔍 New Analysis
           </Link>
+          <button className="btn btn-outline-light btn-sm" onClick={handleSignOut}>Sign out</button>
         </div>
       </nav>
 
       <div className="container py-5" style={{ maxWidth: '1100px' }}>
 
-        {/* Header */}
         <div className="d-flex justify-content-between align-items-center mb-4">
           <h2 className="fw-bold mb-0">RFP History</h2>
           <div className="d-flex gap-2">
@@ -332,7 +405,12 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Stats Row */}
+        {dbError && (
+          <div className="alert alert-warning" role="alert">
+            {dbError}
+          </div>
+        )}
+
         <div className="row mb-4 g-3">
           <div className="col-md-3">
             <div className="dashboard-stat-card">
@@ -360,7 +438,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Deadline Tracker */}
         {deadlineEntries.length > 0 && (
           <div className="card shadow-sm mb-4">
             <div className="card-header bg-warning text-dark">
@@ -414,8 +491,14 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Empty State */}
-        {history.length === 0 && (
+        {historyLoading && (
+          <div className="text-center py-5">
+            <div className="spinner-border text-primary" role="status" />
+            <p className="mt-3 text-muted">Loading history...</p>
+          </div>
+        )}
+
+        {!historyLoading && history.length === 0 && (
           <div className="text-center py-5">
             <div style={{ fontSize: '3rem' }}>📭</div>
             <h5 className="mt-3 text-muted">No analyses yet</h5>
@@ -426,8 +509,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* History Table */}
-        {history.length > 0 && (
+        {!historyLoading && history.length > 0 && (
           <div className="card shadow-sm">
             <div className="card-body p-0">
               {selectedIds.length > 0 && selectedIds.length < 2 && (

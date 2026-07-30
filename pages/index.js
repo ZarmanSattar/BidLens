@@ -1,5 +1,7 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { useRouter } from 'next/router'
 import ResultsPanel from '../components/ResultsPanel'
+import { supabase } from '../lib/supabase/client'
 
 function formatFileSize(bytes) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
@@ -160,10 +162,14 @@ function exportToExcel(results) {
 }
 
 export default function Home() {
+  const router = useRouter()
+  const [session, setSession] = useState(null)
+  const [checkingSession, setCheckingSession] = useState(true)
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
+  const [saveError, setSaveError] = useState(null)
   const [progress, setProgress] = useState(0)
   const [progressLabel, setProgressLabel] = useState('')
   const [showToast, setShowToast] = useState(false)
@@ -173,12 +179,36 @@ export default function Home() {
   const toastTimerRef = useRef(null)
   const progressTimerRef = useRef(null)
 
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (!data.session) {
+        router.push('/login')
+      } else {
+        setSession(data.session)
+        setCheckingSession(false)
+      }
+    })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (!newSession) {
+        router.push('/login')
+      } else {
+        setSession(newSession)
+      }
+    })
+    return () => listener.subscription.unsubscribe()
+  }, [router])
+
+  async function handleSignOut() {
+    await supabase.auth.signOut()
+  }
+
   function handleFileChange(e) {
     const selected = e.target.files[0]
     if (selected && selected.type === 'application/pdf') {
       setFile(selected)
       setResults(null)
       setError(null)
+      setSaveError(null)
       setShowToast(false)
       setProgress(0)
       setProgressLabel('')
@@ -192,6 +222,7 @@ export default function Home() {
     setFile(null)
     setResults(null)
     setError(null)
+    setSaveError(null)
     setShowToast(false)
     setProgress(0)
     setProgressLabel('')
@@ -213,6 +244,7 @@ export default function Home() {
       setFile(dropped)
       setResults(null)
       setError(null)
+      setSaveError(null)
       setShowToast(false)
       setProgress(0)
       setProgressLabel('')
@@ -260,6 +292,7 @@ export default function Home() {
     setLoading(true)
     setResults(null)
     setError(null)
+    setSaveError(null)
     setShowToast(false)
     setProgress(0)
 
@@ -285,27 +318,36 @@ export default function Home() {
       stopProgressSimulation(true)
       setResults(data)
 
-      // Save to localStorage history
-      if (typeof window !== 'undefined') {
-        const entry = {
-          id: Date.now(),
-          fileName: file.name,
-          analyzedAt: new Date().toISOString(),
-          summary: data.summary,
-          executive_summary: data.executive_summary,
-          key_requirements: data.key_requirements,
-          deliverables: data.deliverables,
-          evaluationCriteria: data.evaluationCriteria,
-          risks: data.risks,
-          timeline: data.timeline,
-          go_nogo: data.go_nogo,
-          sections_analyzed: data.sections_analyzed,
-          complianceChecklist: data.complianceChecklist,
+      // Save to Supabase (rfps + analyses), replacing the old localStorage write
+      try {
+        const { data: rfpRow, error: rfpError } = await supabase
+          .from('rfps')
+          .insert({
+            owner_id: session.user.id,
+            title: file.name,
+            original_filename: file.name,
+            status: 'analyzed',
+          })
+          .select()
+          .single()
+
+        if (rfpError) {
+          setSaveError('Analysis complete, but saving to history failed: ' + rfpError.message)
+        } else {
+          const { error: analysisError } = await supabase
+            .from('analyses')
+            .insert({
+              rfp_id: rfpRow.id,
+              owner_id: session.user.id,
+              result: data,
+            })
+
+          if (analysisError) {
+            setSaveError('Analysis complete, but saving to history failed: ' + analysisError.message)
+          }
         }
-        const existing = localStorage.getItem('bidlens_history')
-        const history = existing ? JSON.parse(existing) : []
-        history.push(entry)
-        localStorage.setItem('bidlens_history', JSON.stringify(history))
+      } catch (saveErr) {
+        setSaveError('Analysis complete, but saving to history failed: ' + saveErr.message)
       }
 
       // Show toast
@@ -326,6 +368,10 @@ export default function Home() {
     }
   }
 
+  if (checkingSession) {
+    return <div className="container py-5">Loading...</div>
+  }
+
   return (
     <>
       {/* Toast Notification */}
@@ -343,8 +389,9 @@ export default function Home() {
           Bid<span>Lens</span>
         </span>
         <div className="d-flex align-items-center gap-3">
-          <span className="text-secondary small">AI-Powered RFP Analyzer</span>
+          <span className="text-secondary small">{session?.user?.email}</span>
           <a href="/dashboard" className="btn btn-outline-light btn-sm">📊 Dashboard</a>
+          <button className="btn btn-outline-light btn-sm" onClick={handleSignOut}>Sign out</button>
         </div>
       </nav>
 
@@ -398,6 +445,13 @@ export default function Home() {
         {error && (
           <div className="alert alert-danger" role="alert">
             {error}
+          </div>
+        )}
+
+        {/* Save Warning (analysis succeeded, but persisting it failed) */}
+        {saveError && (
+          <div className="alert alert-warning" role="alert">
+            {saveError}
           </div>
         )}
 
