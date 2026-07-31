@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { estimateExplainTokens } from '../lib/risk/explainCost'
 
 // §5.4 — the Contract Risk section.
 //
@@ -89,7 +90,36 @@ function EvidenceToggle({ matches }) {
   )
 }
 
-function FindingRow({ finding }) {
+// §5.3 — the AI explanation, rendered UNDER the static reference text and
+// visibly marked as generated. The two must never blur together: everything
+// else on this card is fixed library text, and a reader has to be able to tell
+// which sentences a model wrote.
+function AiExplanation({ explanation }) {
+  if (!explanation) {
+    return null
+  }
+
+  return (
+    <div
+      className="mt-2 p-2 bg-white border border-primary border-opacity-25 rounded"
+      style={{ fontSize: '0.85rem', lineHeight: '1.55' }}
+    >
+      <div className="d-flex align-items-center gap-2 mb-1 flex-wrap">
+        <span className="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25">
+          ✨ AI explanation
+        </span>
+        {explanation.needsReview && (
+          <span className="badge bg-warning text-dark">
+            Low confidence — verify
+          </span>
+        )}
+      </div>
+      <span className="text-dark">{explanation.explanation}</span>
+    </div>
+  )
+}
+
+function FindingRow({ finding, explanation }) {
   const style = SEVERITY_STYLE[finding.severity] || SEVERITY_STYLE.low
 
   return (
@@ -120,6 +150,7 @@ function FindingRow({ finding }) {
             ))}
           </div>
         )}
+        <AiExplanation explanation={explanation} />
         <EvidenceToggle matches={finding.matches} />
       </div>
     </div>
@@ -131,6 +162,14 @@ export default function ContractRiskCard({ rfpId }) {
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
 
+  // §5.3 state. Kept entirely separate from the scan above: nothing here is
+  // touched by the zero-token load, and the card renders identically when all
+  // of it is empty.
+  const [explanations, setExplanations] = useState({})
+  const [explaining, setExplaining] = useState(false)
+  const [explainNotice, setExplainNotice] = useState(null)
+  const [explainDone, setExplainDone] = useState(false)
+
   useEffect(() => {
     if (!rfpId) {
       return
@@ -141,6 +180,10 @@ export default function ContractRiskCard({ rfpId }) {
     async function load() {
       setLoading(true)
       setError(null)
+      // A different RFP's explanations must never survive onto a new scan.
+      setExplanations({})
+      setExplainNotice(null)
+      setExplainDone(false)
 
       try {
         const response = await fetch('/api/risk/scan', {
@@ -176,6 +219,67 @@ export default function ContractRiskCard({ rfpId }) {
 
   const findings = data?.findings || []
   const summary = data?.summary
+  const estimate = estimateExplainTokens(findings.length)
+
+  // §5.3 — opt-in, one call, never fired on render. Mirrors how the shredder
+  // keeps run and link as separate deliberate steps.
+  async function handleExplain() {
+    setExplaining(true)
+    setExplainNotice(null)
+
+    try {
+      const response = await fetch('/api/risk/explain', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rfp_id: rfpId }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        setExplainNotice({
+          tone: 'warning',
+          text:
+            payload.error ||
+            'The explanation call failed. The findings below are unaffected.',
+        })
+
+        return
+      }
+
+      const received = payload.explanations || {}
+
+      setExplanations(received)
+      setExplainDone(true)
+
+      const got = Object.keys(received).length
+
+      // Say so when the model returned less than was asked for, rather than
+      // letting a silently unexplained finding look like a rendering bug.
+      if (payload.degraded || got === 0) {
+        setExplainNotice({
+          tone: 'warning',
+          text:
+            payload.message ||
+            'No explanations were generated. The findings below are unaffected.',
+        })
+      } else if (got < findings.length) {
+        setExplainNotice({
+          tone: 'info',
+          text: `Explained ${got} of ${findings.length} findings. The rest are shown with their detection details only.`,
+        })
+      }
+    } catch (err) {
+      setExplainNotice({
+        tone: 'warning',
+        text:
+          err?.message ||
+          'Could not reach the explanation service. The findings below are unaffected.',
+      })
+    } finally {
+      setExplaining(false)
+    }
+  }
 
   return (
     <div className="card mb-4 shadow-sm border-0">
@@ -229,8 +333,52 @@ export default function ContractRiskCard({ rfpId }) {
           </div>
         ) : (
           <>
+            {/* §5.3 trigger. Opt-in by design — the scan above is free and
+                automatic, this costs tokens and only runs on click. */}
+            <div className="d-flex flex-wrap align-items-center gap-2 mb-3 pb-3 border-bottom">
+              <button
+                className="btn btn-sm btn-outline-primary fw-semibold"
+                onClick={handleExplain}
+                disabled={explaining || explainDone}
+              >
+                {explaining ? (
+                  <>
+                    <span
+                      className="spinner-border spinner-border-sm me-2"
+                      role="status"
+                    />
+                    Explaining…
+                  </>
+                ) : explainDone ? (
+                  '✓ Explanations added'
+                ) : (
+                  '✨ Explain these findings'
+                )}
+              </button>
+
+              {!explainDone && (
+                <span className="text-muted" style={{ fontSize: '0.78rem' }}>
+                  Uses AI · one call for all {findings.length} finding
+                  {findings.length === 1 ? '' : 's'} · {estimate.label}
+                </span>
+              )}
+            </div>
+
+            {explainNotice && (
+              <div
+                className={`alert alert-${explainNotice.tone} py-2`}
+                style={{ fontSize: '0.85rem' }}
+              >
+                {explainNotice.text}
+              </div>
+            )}
+
             {findings.map((finding) => (
-              <FindingRow key={finding.id} finding={finding} />
+              <FindingRow
+                key={finding.id}
+                finding={finding}
+                explanation={explanations[finding.id]}
+              />
             ))}
 
             <div
