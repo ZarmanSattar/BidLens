@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import ResultsPanel from '../components/ResultsPanel'
 import { supabase } from '../lib/supabase/client'
+import { formatDate } from '../utils/formatDate'
 
 function exportToPDF(results) {
   import('jspdf').then(({ default: jsPDF }) => {
@@ -380,6 +381,9 @@ export default function Dashboard() {
           <Link href="/company-profile" className="btn btn-outline-light btn-sm">
             🏢 Company Profile
           </Link>
+          <Link href="/content-library" className="btn btn-outline-light btn-sm">
+            📚 Content Library
+          </Link>
           <button className="btn btn-outline-light btn-sm" onClick={handleSignOut}>Sign out</button>
         </div>
       </nav>
@@ -578,11 +582,7 @@ export default function Dashboard() {
                             {entry.summary?.issuingAgency || '—'}
                           </td>
                           <td style={{ fontSize: '0.85rem' }}>
-                            {new Date(entry.analyzedAt).toLocaleDateString('en-US', {
-                              year: 'numeric',
-                              month: 'short',
-                              day: 'numeric'
-                            })}
+                            {formatDate(entry.analyzedAt)}
                           </td>
                           <td className="text-center">
                             <span className="fw-bold" style={{ color: scoreColor }}>

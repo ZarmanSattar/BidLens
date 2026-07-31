@@ -4,6 +4,7 @@ import TraceabilityMatrix, {
   joinRequirementLinks,
 } from '../components/TraceabilityMatrix'
 import CompanyFitCard from '../components/CompanyFitCard'
+import ResponseCoverageCard from '../components/ResponseCoverageCard'
 
 // §4.5 — standalone Traceability Matrix, addressable by rfp_id.
 //
@@ -142,6 +143,11 @@ export default function TraceabilityPage({ rfpId, title, rows, error }) {
                 with no browser session behind them, which is exactly the state
                 a fit check is useful in. */}
             <CompanyFitCard rfpId={rfpId} />
+
+            {/* Response coverage (§8.4). Follows Company Fit because it asks
+                the next question: fit is whether we CAN do the work, this is
+                how much of the answer has actually been written. */}
+            <ResponseCoverageCard rfpId={rfpId} />
 
             <div className="card shadow-sm border-0">
               <div className="card-body p-0 bg-white rounded">

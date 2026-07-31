@@ -552,6 +552,7 @@ export default function Home() {
           <span className="text-secondary small">{session?.user?.email}</span>
           <Link href="/dashboard" className="btn btn-outline-light btn-sm">📊 Dashboard</Link>
           <Link href="/company-profile" className="btn btn-outline-light btn-sm">🏢 Company Profile</Link>
+          <Link href="/content-library" className="btn btn-outline-light btn-sm">📚 Content Library</Link>
           <button className="btn btn-outline-light btn-sm" onClick={handleSignOut}>Sign out</button>
         </div>
       </nav>
