@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { estimateJudgeTokens } from '../lib/fit/judgeCost'
 
@@ -16,6 +16,33 @@ import { estimateJudgeTokens } from '../lib/fit/judgeCost'
 // A score with no AI judgment is marked PROVISIONAL rather than presented as a
 // finished assessment — a blocker-only 100 means "no hard stop found", not
 // "this company can do the work".
+
+// ---------------------------------------------------------------------------
+// Auto-continue (§6.3 polish).
+//
+// The work has not changed: the same batches, the same total tokens, the same
+// server route. The only difference is that the client now waits out the rate
+// limit and presses "continue" itself, instead of asking the user to sit there
+// doing it five times.
+//
+// Nothing here starts on its own. The first call is still an explicit click
+// with the cost estimate shown next to it; auto-continue only takes over after
+// that, and only when the server reports work remaining.
+// ---------------------------------------------------------------------------
+
+/** Hard stop, so a genuinely broken state cannot spin forever. */
+const MAX_AUTO_ATTEMPTS = 10
+
+/** Used when the server gives no retry hint. Groq's TPM window is 60s. */
+const DEFAULT_WAIT_SECONDS = 65
+
+/** Never hammer the API faster than this, whatever the server says. */
+const MIN_WAIT_SECONDS = 5
+
+// Beyond this, waiting is not a rate-limit blip — it is a daily quota, and
+// sitting on a countdown for twenty minutes helps nobody. The loop stops and
+// hands control back with the real number.
+const MAX_AUTO_WAIT_SECONDS = 300
 
 const VERDICT_TONE = {
   no_bid: { badge: 'bg-danger', text: 'text-danger' },
@@ -217,6 +244,17 @@ export default function CompanyFitCard({ rfpId }) {
   const [judging, setJudging] = useState(false)
   const [judgeNotice, setJudgeNotice] = useState(null)
 
+  // Auto-continue state.
+  const [autoRunning, setAutoRunning] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const [countdown, setCountdown] = useState(0)
+
+  // Refs, not state: the loop is an async function that has to read the CURRENT
+  // stop flag between awaits. A state value captured when the loop started
+  // would never change from inside it.
+  const stopRef = useRef(false)
+  const timerRef = useRef(null)
+
   useEffect(() => {
     if (!rfpId) {
       return
@@ -261,6 +299,10 @@ export default function CompanyFitCard({ rfpId }) {
 
     return () => {
       cancelled = true
+      // Switching RFP (or unmounting) must not leave an auto-loop running
+      // against the previous one, nor a countdown ticking into a dead card.
+      stopRef.current = true
+      clearWaitTimer()
     }
   }, [rfpId])
 
@@ -278,86 +320,246 @@ export default function CompanyFitCard({ rfpId }) {
   // number on the button has to be the price of continuing.
   const estimate = estimateJudgeTokens(remaining)
 
-  // §6.3 — opt-in, one call, never fired on render. Mirrors ContractRiskCard's
-  // explain button and the shredder's deliberate two-step.
-  async function handleJudge() {
-    setJudging(true)
-    setJudgeNotice(null)
+  function clearWaitTimer() {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  /**
+   * Waits `seconds`, ticking a visible countdown, and resolves early on Stop.
+   *
+   * @param {number} seconds
+   * @returns {Promise<'done'|'stopped'>}
+   */
+  function waitWithCountdown(seconds) {
+    return new Promise((resolve) => {
+      let left = seconds
+
+      setCountdown(left)
+
+      timerRef.current = setInterval(() => {
+        if (stopRef.current) {
+          clearWaitTimer()
+          setCountdown(0)
+          resolve('stopped')
+
+          return
+        }
+
+        left -= 1
+        setCountdown(left)
+
+        if (left <= 0) {
+          clearWaitTimer()
+          resolve('done')
+        }
+      }, 1000)
+    })
+  }
+
+  /**
+   * One call to /api/fit/judge, normalized into a decision the loop can act on.
+   *
+   * @returns {Promise<object>} `{fatal, message, remaining, judgedThisCall,
+   *   waitSeconds}`. `fatal` means stop now and show the message — a real
+   *   failure, not a rate limit.
+   */
+  async function judgeOnce() {
+    let response
+    let payload
 
     try {
-      const response = await fetch('/api/fit/judge', {
+      response = await fetch('/api/fit/judge', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ rfp_id: rfpId }),
       })
 
-      const payload = await response.json().catch(() => ({}))
-
-      // Even a 429 carries progress and a score built from what IS saved, so
-      // the state is adopted before the error branch returns. Anything already
-      // written to fit_judgments is not lost by a failed continuation.
-      if (payload.progress) {
-        setData((previous) => ({
-          ...previous,
-          fit: payload.fit || previous.fit,
-          progress: payload.progress,
-        }))
+      payload = await response.json().catch(() => ({}))
+    } catch (err) {
+      // Could not reach the server at all. Retrying blindly would just spin.
+      return {
+        fatal: true,
+        message:
+          err?.message ||
+          'Could not reach the fit judgment service. The blocker checks below are unaffected.',
       }
+    }
 
-      if (!response.ok) {
-        setJudgeNotice({
-          tone: 'warning',
-          text:
-            payload.error ||
-            'The fit judgment failed. The blocker checks below are unaffected.',
-        })
+    // Even a 429 carries progress and a score built from what IS saved, so the
+    // state is adopted before any error branch returns. Anything already
+    // written to fit_judgments is never lost by a failed continuation.
+    if (payload.progress) {
+      setData((previous) => ({
+        ...previous,
+        fit: payload.fit || previous.fit,
+        progress: payload.progress,
+      }))
+    }
 
-        return
+    // A 429 is the expected rate-limit stop and IS retryable. Every other
+    // non-OK status is a real problem — a missing profile, an unshredded RFP, a
+    // server fault — and retrying it would fail identically.
+    if (!response.ok && response.status !== 429) {
+      return {
+        fatal: true,
+        message:
+          payload.error ||
+          'The fit judgment failed. The blocker checks below are unaffected.',
       }
+    }
 
-      const done = payload.progress?.judged ?? 0
-      const left = payload.progress?.remaining ?? 0
-      const thisCall = payload.progress?.judged_this_call ?? 0
+    // The server already passes judgeFit's abort block straight through, so the
+    // real reset time is available without any change to the route. It is in
+    // milliseconds here, unlike the shredder routes which normalize to
+    // retry_after_seconds at the route layer.
+    const retryAfterMs = payload.stats?.aborted?.retryAfterMs
 
-      if (left === 0) {
-        // Nothing further to spend on. Only now does the button retire.
-        setJudgeNotice(
-          thisCall === 0
-            ? { tone: 'info', text: payload.message || 'Already judged — no AI call was needed.' }
-            : null
-        )
-      } else if (thisCall === 0) {
-        setJudgeNotice({
-          tone: 'warning',
-          text:
-            payload.message ||
-            'No new requirements could be judged this time. Anything already saved is unaffected — try again.',
-        })
-      } else {
-        // A partial run is the expected outcome on a rate-limited tier, not a
-        // fault: ~20,000 tokens of work does not fit in a 12,000-token rolling
-        // window. Progress IS saved, so say so and say what continuing costs.
-        const stopped = payload.stats?.aborted
+    const waitSeconds = Number.isFinite(Number(retryAfterMs))
+      ? Math.max(MIN_WAIT_SECONDS, Math.ceil(Number(retryAfterMs) / 1000) + 5)
+      : DEFAULT_WAIT_SECONDS
+
+    return {
+      fatal: false,
+      remaining: payload.progress?.remaining ?? 0,
+      judged: payload.progress?.judged ?? 0,
+      total: payload.progress?.total ?? 0,
+      judgedThisCall: payload.progress?.judged_this_call ?? 0,
+      rateLimited: Boolean(payload.stats?.aborted) || response.status === 429,
+      waitSeconds,
+      message: payload.message,
+    }
+  }
+
+  // §6.3 — opt-in. The FIRST call is still an explicit click with the cost
+  // estimate shown beside it; from there this drives the remaining calls
+  // itself, waiting out the rate limit between them. Same batches, same total
+  // cost — just without making the user press the button five times.
+  async function handleJudge() {
+    stopRef.current = false
+
+    setAutoRunning(true)
+    setJudgeNotice(null)
+
+    let attempts = 0
+    let lastRemaining = null
+
+    try {
+      while (!stopRef.current) {
+        attempts += 1
+
+        setAttempt(attempts)
+        setJudging(true)
+
+        const outcome = await judgeOnce()
+
+        setJudging(false)
+
+        if (stopRef.current) {
+          break
+        }
+
+        if (outcome.fatal) {
+          setJudgeNotice({ tone: 'warning', text: outcome.message })
+
+          break
+        }
+
+        if (outcome.remaining === 0) {
+          setJudgeNotice(
+            outcome.judgedThisCall === 0 && attempts === 1
+              ? {
+                  tone: 'info',
+                  text: outcome.message || 'Already judged — no AI call was needed.',
+                }
+              : {
+                  tone: 'success',
+                  text: `All ${outcome.total} unblocked requirements judged and saved.`,
+                }
+          )
+
+          break
+        }
+
+        // No forward progress between two consecutive calls means waiting
+        // longer will not help — something other than the rate limit is
+        // stopping it.
+        if (lastRemaining !== null && outcome.remaining === lastRemaining) {
+          setJudgeNotice({
+            tone: 'warning',
+            text:
+              `Stopped: two attempts in a row judged nothing new (${outcome.remaining} still ` +
+              'to go). Everything judged so far is saved. ' +
+              (outcome.message || 'Try again later, or check the server logs.'),
+          })
+
+          break
+        }
+
+        lastRemaining = outcome.remaining
+
+        if (attempts >= MAX_AUTO_ATTEMPTS) {
+          setJudgeNotice({
+            tone: 'warning',
+            text:
+              `Stopped after ${MAX_AUTO_ATTEMPTS} automatic attempts with ` +
+              `${outcome.remaining} requirement(s) still to judge. Everything ` +
+              'judged so far is saved — press Continue to keep going.',
+          })
+
+          break
+        }
+
+        if (outcome.waitSeconds > MAX_AUTO_WAIT_SECONDS) {
+          setJudgeNotice({
+            tone: 'warning',
+            text:
+              `Groq wants ${Math.ceil(outcome.waitSeconds / 60)} minute(s) before the next ` +
+              'call, which is a daily quota rather than the per-minute limit. ' +
+              `Stopping here — ${outcome.judged} of ${outcome.total} are judged and saved. ` +
+              'Press Continue once the quota resets.',
+          })
+
+          break
+        }
 
         setJudgeNotice({
           tone: 'info',
           text:
-            `Judged ${thisCall} more — ${done} of ${payload.progress.total} now done, ${left} to go. ` +
-            (stopped
-              ? "Groq's rate limit stopped the run early. Everything judged so far is saved; press the button again once the limit resets to continue where it left off."
-              : 'Everything judged so far is saved. Press the button again to continue.'),
+            `Judged ${outcome.judged} of ${outcome.total} so far — ${outcome.remaining} to go. ` +
+            'Everything judged is saved. Waiting out Groq’s rate limit, then continuing automatically.',
+        })
+
+        if ((await waitWithCountdown(outcome.waitSeconds)) === 'stopped') {
+          break
+        }
+      }
+
+      if (stopRef.current) {
+        setJudgeNotice({
+          tone: 'info',
+          text:
+            'Stopped. Everything judged so far is saved — press Continue to pick ' +
+            'up where it left off.',
         })
       }
-    } catch (err) {
-      setJudgeNotice({
-        tone: 'warning',
-        text:
-          err?.message ||
-          'Could not reach the fit judgment service. The blocker checks below are unaffected.',
-      })
     } finally {
+      clearWaitTimer()
       setJudging(false)
+      setAutoRunning(false)
+      setCountdown(0)
+      setAttempt(0)
     }
+  }
+
+  /** Cancels the auto-loop. A call already in flight is allowed to finish and
+   *  save, since stopping mid-request would waste tokens already spent. */
+  function handleStop() {
+    stopRef.current = true
+    clearWaitTimer()
+    setCountdown(0)
   }
 
   return (
@@ -418,7 +620,7 @@ export default function CompanyFitCard({ rfpId }) {
                 className="btn btn-sm btn-outline-primary fw-semibold"
                 onClick={handleJudge}
                 disabled={
-                  judging || complete || !data.has_profile || clearCount === 0
+                  autoRunning || complete || !data.has_profile || clearCount === 0
                 }
               >
                 {judging ? (
@@ -428,6 +630,15 @@ export default function CompanyFitCard({ rfpId }) {
                       role="status"
                     />
                     Judging fit…
+                    {attempt > 1 ? ` (attempt ${attempt})` : ''}
+                  </>
+                ) : autoRunning ? (
+                  <>
+                    <span
+                      className="spinner-border spinner-border-sm me-2"
+                      role="status"
+                    />
+                    Waiting to continue…
                   </>
                 ) : complete ? (
                   '✓ Fit judged'
@@ -438,7 +649,37 @@ export default function CompanyFitCard({ rfpId }) {
                 )}
               </button>
 
-              {!complete && (
+              {/* Live state while the loop is running: what is done, what is
+                  left, and exactly how long until the next call — never a
+                  silent hang. */}
+              {autoRunning && (
+                <>
+                  <button
+                    className="btn btn-sm btn-outline-secondary fw-semibold"
+                    onClick={handleStop}
+                  >
+                    ■ Stop
+                  </button>
+
+                  <span className="text-muted" style={{ fontSize: '0.78rem' }}>
+                    {countdown > 0 ? (
+                      <>
+                        Judged <strong>{progress?.judged ?? 0}</strong> of{' '}
+                        <strong>{progress?.total ?? clearCount}</strong> —
+                        continuing in <strong>{countdown}s</strong> (attempt{' '}
+                        {attempt} of {MAX_AUTO_ATTEMPTS})
+                      </>
+                    ) : (
+                      <>
+                        Continuing automatically · attempt {attempt} of{' '}
+                        {MAX_AUTO_ATTEMPTS} · no extra cost beyond the estimate
+                      </>
+                    )}
+                  </span>
+                </>
+              )}
+
+              {!complete && !autoRunning && (
                 <span className="text-muted" style={{ fontSize: '0.78rem' }}>
                   {!data.has_profile
                     ? 'Needs a company profile first.'
@@ -448,7 +689,7 @@ export default function CompanyFitCard({ rfpId }) {
                           estimate.batches === 1 ? '' : 's'
                         } for ${remaining} remaining requirement${
                           remaining === 1 ? '' : 's'
-                        } · ${estimate.label}`}
+                        } · ${estimate.label} · continues automatically if Groq rate-limits, no extra cost`}
                 </span>
               )}
 
