@@ -309,9 +309,19 @@ export default function CompanyFitCard({ rfpId }) {
             'No fit judgments were generated. The blocker checks below are unaffected.',
         })
       } else if (judged < clearCount) {
+        // A partial run is the expected outcome on a rate-limited tier, not a
+        // fault: ~20,000 tokens of work does not fit in a 12,000-token rolling
+        // window. Say what happened and that re-running continues, rather than
+        // leaving the shortfall to look like a bug.
+        const stopped = payload.stats?.aborted
+
         setJudgeNotice({
           tone: 'info',
-          text: `Judged ${judged} of ${clearCount} unblocked requirements. The rest are not scored.`,
+          text:
+            `Judged ${judged} of ${clearCount} unblocked requirements` +
+            (stopped
+              ? `. Groq's rate limit stopped the run after ${payload.stats.batches} of ${payload.stats.plannedBatches} batches — the score above covers what was judged. Try again once the limit resets.`
+              : '. The rest are shown without a verdict.'),
         })
       }
     } catch (err) {
@@ -403,7 +413,9 @@ export default function CompanyFitCard({ rfpId }) {
                     ? 'Needs a company profile first.'
                     : clearCount === 0
                       ? 'Every requirement is already blocked — nothing left to judge.'
-                      : `Uses AI · one call for all ${clearCount} unblocked requirement${
+                      : `Uses AI · ${estimate.batches} call${
+                          estimate.batches === 1 ? '' : 's'
+                        } for ${clearCount} unblocked requirement${
                           clearCount === 1 ? '' : 's'
                         } · ${estimate.label}`}
                 </span>
