@@ -179,6 +179,11 @@ export default function Home() {
   const [progressLabel, setProgressLabel] = useState('')
   const [showToast, setShowToast] = useState(false)
 
+  // §7.1 — additional files bundled into the same RFP package. The base file
+  // above is still the one that gets analyzed; these only contribute text.
+  const [attachments, setAttachments] = useState([])
+  const attachmentInputRef = useRef(null)
+
   const fileInputRef = useRef(null)
   const resultsRef = useRef(null)
   const toastTimerRef = useRef(null)
@@ -226,6 +231,9 @@ export default function Home() {
   function handleRemoveFile(e) {
     e.stopPropagation()
     setFile(null)
+    // Attachments belong to the base file they were bundled with; keeping them
+    // after it is removed would silently attach them to the next upload.
+    setAttachments([])
     setResults(null)
     setRfpId(null)
     setError(null)
@@ -238,6 +246,31 @@ export default function Home() {
 
   function handleZoneClick() {
     fileInputRef.current.click()
+  }
+
+  // §7.1 — attachment handling. Deliberately separate from the base file:
+  // exhibits and wage determinations belong to the same solicitation, but only
+  // the base document is worth spending an AI analysis on.
+  function handleAttachmentsChange(e) {
+    const picked = Array.from(e.target.files || []).filter(
+      (candidate) => candidate.type === 'application/pdf'
+    )
+
+    if (picked.length !== (e.target.files?.length || 0)) {
+      setError('Only PDF attachments are supported; non-PDF files were ignored.')
+    }
+
+    setAttachments((previous) => {
+      const seen = new Set(previous.map((entry) => entry.name))
+
+      return [...previous, ...picked.filter((entry) => !seen.has(entry.name))]
+    })
+
+    e.target.value = ''
+  }
+
+  function removeAttachment(name) {
+    setAttachments((previous) => previous.filter((entry) => entry.name !== name))
   }
 
   function handleDragOver(e) {
@@ -295,6 +328,31 @@ export default function Home() {
     }
   }
 
+  // §7.1 — extracts an attachment's text WITHOUT an AI call.
+  //
+  // The base solicitation still goes to /api/analyze exactly as before: one
+  // Groq call per upload, unchanged. Attachments go to /api/package/extract,
+  // which only parses PDF text. Sending five files through /api/analyze would
+  // quintuple the cost of an upload, which is not what attaching exhibits
+  // should mean.
+  async function extractAttachment(attachment) {
+    const formData = new FormData()
+    formData.append('file', attachment)
+
+    const response = await fetch('/api/package/extract', {
+      method: 'POST',
+      body: formData,
+    })
+
+    const payload = await response.json().catch(() => ({}))
+
+    if (!response.ok) {
+      throw new Error(`${attachment.name}: ${payload.error || 'extraction failed'}`)
+    }
+
+    return payload
+  }
+
   async function handleAnalyze() {
     if (!file) return
     setLoading(true)
@@ -339,6 +397,43 @@ export default function Home() {
         // out of the analyses row.
         const { sourceText, pages: pageTexts, ...analysis } = data
 
+        // §7.1 — pull in any attachments' text before the insert, so the
+        // package is stored as one document from the start.
+        //
+        // rfps.raw_text / rfps.pages remain the WHOLE package concatenated,
+        // base file first. That is what keeps the shredder, the risk scan and
+        // the fit check working with no changes at all — they read those two
+        // columns and neither knows nor cares how many files produced them.
+        const basePages = Array.isArray(pageTexts) ? pageTexts : []
+
+        const filePlan = [
+          {
+            filename: file.name,
+            role: 'base',
+            raw_text: sourceText ?? null,
+            pages: basePages,
+          },
+        ]
+
+        for (const attachment of attachments) {
+          setProgressLabel(`Extracting ${attachment.name}…`)
+
+          const extracted = await extractAttachment(attachment)
+
+          filePlan.push({
+            filename: extracted.filename || attachment.name,
+            role: 'attachment',
+            raw_text: extracted.raw_text ?? null,
+            pages: Array.isArray(extracted.pages) ? extracted.pages : [],
+          })
+        }
+
+        const combinedPages = filePlan.flatMap((entry) => entry.pages)
+        const combinedText = filePlan
+          .map((entry) => entry.raw_text)
+          .filter(Boolean)
+          .join('\n\n')
+
         const { data: rfpRow, error: rfpError } = await supabase
           .from('rfps')
           .insert({
@@ -346,10 +441,8 @@ export default function Home() {
             title: file.name,
             original_filename: file.name,
             status: 'analyzed',
-            raw_text: sourceText ?? null,
-            pages: Array.isArray(pageTexts) && pageTexts.length > 0
-              ? pageTexts
-              : null,
+            raw_text: combinedText || sourceText || null,
+            pages: combinedPages.length > 0 ? combinedPages : null,
           })
           .select()
           .single()
@@ -358,6 +451,43 @@ export default function Home() {
           setSaveError('Analysis complete, but saving to history failed: ' + rfpError.message)
         } else {
           setRfpId(rfpRow.id)
+
+          // §7.1 — record what the package was made of. Only written when
+          // there IS a package: a lone file leaves this empty, which is
+          // exactly the state every RFP uploaded before this feature is in,
+          // and readers treat "no rows" as "single file".
+          if (filePlan.length > 1) {
+            let offset = 0
+
+            const fileRows = filePlan.map((entry, index) => {
+              const row = {
+                rfp_id: rfpRow.id,
+                filename: entry.filename,
+                role: entry.role,
+                sort_order: index,
+                raw_text: entry.raw_text,
+                pages: entry.pages.length > 0 ? entry.pages : null,
+                page_offset: offset,
+                page_count: entry.pages.length,
+              }
+
+              offset += entry.pages.length
+
+              return row
+            })
+
+            const { error: filesError } = await supabase
+              .from('rfp_files')
+              .insert(fileRows)
+
+            if (filesError) {
+              setSaveError(
+                'Analysis saved, but the per-file breakdown failed: ' +
+                  filesError.message +
+                  ' Cross-file contradiction checks will be unavailable.'
+              )
+            }
+          }
 
           const { error: analysisError } = await supabase
             .from('analyses')
@@ -471,6 +601,76 @@ export default function Home() {
             </>
           )}
         </div>
+
+        {/* §7.1 — attachments. Only offered once a base file is chosen, so the
+            two roles cannot be confused: the base document is what gets
+            analyzed, these are bundled with it. */}
+        {file && (
+          <div className="card border-0 shadow-sm mb-3">
+            <div className="card-body py-3">
+              <div className="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div>
+                  <span className="fw-semibold text-dark">
+                    📎 Attachments{' '}
+                    {attachments.length > 0 && (
+                      <span className="badge bg-light text-dark border">
+                        {attachments.length}
+                      </span>
+                    )}
+                  </span>
+                  <div className="text-muted" style={{ fontSize: '0.78rem' }}>
+                    Exhibits, wage determinations, pricing sheets, Q&amp;A. Their
+                    text joins the same package — no extra AI cost.
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-primary fw-semibold"
+                  onClick={() => attachmentInputRef.current?.click()}
+                  disabled={loading}
+                >
+                  + Add files
+                </button>
+
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  multiple
+                  ref={attachmentInputRef}
+                  onChange={handleAttachmentsChange}
+                  style={{ display: 'none' }}
+                />
+              </div>
+
+              {attachments.length > 0 && (
+                <ul className="list-group list-group-flush mt-3">
+                  {attachments.map((attachment) => (
+                    <li
+                      key={attachment.name}
+                      className="list-group-item d-flex justify-content-between align-items-center px-0 py-2"
+                    >
+                      <span style={{ fontSize: '0.85rem' }}>
+                        {attachment.name}{' '}
+                        <span className="text-muted">
+                          {formatFileSize(attachment.size)}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-secondary"
+                        onClick={() => removeAttachment(attachment.name)}
+                        disabled={loading}
+                      >
+                        ✕
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Error Message */}
         {error && (
