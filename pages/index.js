@@ -168,6 +168,10 @@ export default function Home() {
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState(null)
+  // The id of the rfps row this analysis was saved to. ResultsPanel needs it
+  // to load the shredded requirements for its Traceability Matrix, and it is
+  // only known after the insert below succeeds.
+  const [rfpId, setRfpId] = useState(null)
   const [error, setError] = useState(null)
   const [saveError, setSaveError] = useState(null)
   const [progress, setProgress] = useState(0)
@@ -207,6 +211,7 @@ export default function Home() {
     if (selected && selected.type === 'application/pdf') {
       setFile(selected)
       setResults(null)
+      setRfpId(null)
       setError(null)
       setSaveError(null)
       setShowToast(false)
@@ -221,6 +226,7 @@ export default function Home() {
     e.stopPropagation()
     setFile(null)
     setResults(null)
+    setRfpId(null)
     setError(null)
     setSaveError(null)
     setShowToast(false)
@@ -243,6 +249,7 @@ export default function Home() {
     if (dropped && dropped.type === 'application/pdf') {
       setFile(dropped)
       setResults(null)
+      setRfpId(null)
       setError(null)
       setSaveError(null)
       setShowToast(false)
@@ -291,6 +298,7 @@ export default function Home() {
     if (!file) return
     setLoading(true)
     setResults(null)
+    setRfpId(null)
     setError(null)
     setSaveError(null)
     setShowToast(false)
@@ -348,6 +356,8 @@ export default function Home() {
         if (rfpError) {
           setSaveError('Analysis complete, but saving to history failed: ' + rfpError.message)
         } else {
+          setRfpId(rfpRow.id)
+
           const { error: analysisError } = await supabase
             .from('analyses')
             .insert({
@@ -514,6 +524,7 @@ export default function Home() {
           {results && (
             <ResultsPanel
               data={results}
+              rfpId={rfpId}
               onExportPDF={() => exportToPDF(results)}
               onExportExcel={() => exportToExcel(results)}
             />

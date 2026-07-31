@@ -558,6 +558,9 @@ function TraceabilityCard({ rfpId }) {
   const [rows, setRows] = useState([])
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  // Bumped after a shred run so the effect below re-reads the newly written
+  // requirements and links.
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     // No state reset here: the render below already refuses to show the matrix
@@ -629,7 +632,7 @@ function TraceabilityCard({ rfpId }) {
     return () => {
       cancelled = true
     }
-  }, [rfpId])
+  }, [rfpId, reloadKey])
 
   return (
     <div className="card shadow-sm mb-5 border-0">
@@ -656,7 +659,12 @@ function TraceabilityCard({ rfpId }) {
             Loading requirements…
           </div>
         ) : (
-          <TraceabilityMatrix rows={rows} error={error} />
+          <TraceabilityMatrix
+            rows={rows}
+            error={error}
+            rfpId={rfpId}
+            onShredded={() => setReloadKey((key) => key + 1)}
+          />
         )}
       </div>
     </div>

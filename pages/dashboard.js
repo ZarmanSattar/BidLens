@@ -623,6 +623,7 @@ export default function Dashboard() {
                               <div className="expanded-results-panel">
                                 <ResultsPanel
                                   data={entry}
+                                  rfpId={entry.rfpId}
                                   onExportPDF={() => exportToPDF(entry)}
                                   onExportExcel={() => exportToExcel(entry)}
                                 />
