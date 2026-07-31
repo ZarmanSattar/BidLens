@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/router'
+import Link from 'next/link'
 import ResultsPanel from '../components/ResultsPanel'
 import { supabase } from '../lib/supabase/client'
 
@@ -419,7 +420,8 @@ export default function Home() {
         </span>
         <div className="d-flex align-items-center gap-3">
           <span className="text-secondary small">{session?.user?.email}</span>
-          <a href="/dashboard" className="btn btn-outline-light btn-sm">📊 Dashboard</a>
+          <Link href="/dashboard" className="btn btn-outline-light btn-sm">📊 Dashboard</Link>
+          <Link href="/company-profile" className="btn btn-outline-light btn-sm">🏢 Company Profile</Link>
           <button className="btn btn-outline-light btn-sm" onClick={handleSignOut}>Sign out</button>
         </div>
       </nav>

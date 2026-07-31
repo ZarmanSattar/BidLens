@@ -377,6 +377,9 @@ export default function Dashboard() {
           <Link href="/" className="btn btn-primary btn-sm">
             🔍 New Analysis
           </Link>
+          <Link href="/company-profile" className="btn btn-outline-light btn-sm">
+            🏢 Company Profile
+          </Link>
           <button className="btn btn-outline-light btn-sm" onClick={handleSignOut}>Sign out</button>
         </div>
       </nav>

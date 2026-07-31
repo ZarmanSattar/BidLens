@@ -7,6 +7,7 @@ import TraceabilityMatrix, {
   joinRequirementLinks,
 } from './TraceabilityMatrix'
 import ContractRiskCard from './ContractRiskCard'
+import CompanyFitCard from './CompanyFitCard'
 import { supabase } from '../lib/supabase/client'
 
 const statusColors = {
@@ -712,6 +713,10 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
           two answer adjacent questions: that one is the AI compliance verdict,
           this one is what pattern-matching found in the contract terms. */}
       <ContractRiskCard rfpId={rfpId} />
+      {/* Company Fit (§6.4) — follows Contract Risk because it answers the
+          next question in the same sequence: that card says what the contract
+          asks of any bidder, this one says what it asks of THIS company. */}
+      <CompanyFitCard rfpId={rfpId} />
       <SummaryCard summary={data.summary} />
 
       {/* RE-STYLED Deliverables */}

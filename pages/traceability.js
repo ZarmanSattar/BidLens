@@ -3,6 +3,7 @@ import { useRouter } from 'next/router'
 import TraceabilityMatrix, {
   joinRequirementLinks,
 } from '../components/TraceabilityMatrix'
+import CompanyFitCard from '../components/CompanyFitCard'
 
 // §4.5 — standalone Traceability Matrix, addressable by rfp_id.
 //
@@ -134,6 +135,13 @@ export default function TraceabilityPage({ rfpId, title, rows, error }) {
                 </div>
               </div>
             </div>
+
+            {/* Company Fit (§6.4). Mounted here as well as in ResultsPanel
+                because this page is the only route that can open an already
+                shredded RFP by id — including datasets produced over the API
+                with no browser session behind them, which is exactly the state
+                a fit check is useful in. */}
+            <CompanyFitCard rfpId={rfpId} />
 
             <div className="card shadow-sm border-0">
               <div className="card-body p-0 bg-white rounded">
