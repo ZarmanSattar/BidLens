@@ -1,8 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
 import { downloadJsonExport } from '../utils/exportToJson'
+import TraceabilityMatrix, {
+  joinRequirementLinks,
+} from './TraceabilityMatrix'
+import ContractRiskCard from './ContractRiskCard'
+import { supabase } from '../lib/supabase/client'
 
 const statusColors = {
   'GO': 'success',
@@ -539,7 +544,126 @@ function DepartmentChecklist({ items }) {
   )
 }
 
-export default function ResultsPanel({ data, onExportPDF, onExportExcel }) {
+// §4.5 — the Traceability Matrix card.
+//
+// Reads through the anon client rather than an API route: RLS already scopes
+// requirements and requirement_links to the owning user, so the browser query
+// returns this session's rows and nothing else. That is the same pattern
+// dashboard.js uses to read rfps and analyses.
+//
+// The shredder is not part of the analyze flow, so a freshly analyzed RFP has
+// no requirements until /api/shredder/run is called for it. TraceabilityMatrix
+// renders that as its empty state; this card just reports the load.
+function TraceabilityCard({ rfpId }) {
+  const [rows, setRows] = useState([])
+  const [error, setError] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    // No state reset here: the render below already refuses to show the matrix
+    // without an rfpId, so stale rows are unreachable rather than merely
+    // cleared, and clearing them synchronously would cascade a render.
+    if (!rfpId) {
+      return
+    }
+
+    let cancelled = false
+
+    async function load() {
+      setLoading(true)
+      setError(null)
+
+      const { data: requirements, error: requirementsError } = await supabase
+        .from('requirements')
+        .select(
+          'id, req_number, requirement_text, page, section, role, department, ' +
+            'confidence, needs_review, classification_error'
+        )
+        .eq('rfp_id', rfpId)
+
+      if (cancelled) return
+
+      if (requirementsError) {
+        setError(requirementsError.message)
+        setLoading(false)
+
+        return
+      }
+
+      const requirementRows = requirements || []
+
+      // requirement_links carries no rfp_id, so this RFP's requirement ids are
+      // the filter. Skipped entirely when there are no requirements — an
+      // .in() on an empty list is a query with no possible result.
+      const { data: links, error: linksError } = requirementRows.length
+        ? await supabase
+            .from('requirement_links')
+            .select('id, requirement_id, linked_requirement_id, relationship_note')
+            .in(
+              'requirement_id',
+              requirementRows.map((row) => row.id)
+            )
+        : { data: [], error: null }
+
+      if (cancelled) return
+
+      if (linksError) {
+        setError(linksError.message)
+        setLoading(false)
+
+        return
+      }
+
+      const sequence = (value) => Number(/(\d+)\s*$/.exec(value || '')?.[1] || 0)
+
+      setRows(
+        joinRequirementLinks(requirementRows, links || []).sort(
+          (a, b) => sequence(a.req_number) - sequence(b.req_number)
+        )
+      )
+      setLoading(false)
+    }
+
+    load()
+
+    return () => {
+      cancelled = true
+    }
+  }, [rfpId])
+
+  return (
+    <div className="card shadow-sm mb-5 border-0">
+      <div className="card-header bg-dark text-white border-0 py-3 d-flex justify-content-between align-items-center">
+        <h5 className="mb-0 fw-bold">🔗 Traceability Matrix</h5>
+        {rfpId && (
+          <a
+            href={`/traceability?rfp_id=${rfpId}`}
+            className="btn btn-sm btn-outline-light"
+          >
+            Open full view ↗
+          </a>
+        )}
+      </div>
+      <div className="card-body p-0 bg-white border border-top-0 rounded-bottom">
+        {!rfpId ? (
+          <div className="text-center py-5 text-muted">
+            This analysis has not been saved to an RFP record yet, so there are
+            no shredded requirements to trace.
+          </div>
+        ) : loading ? (
+          <div className="text-center py-5 text-muted">
+            <span className="spinner-border spinner-border-sm me-2" role="status" />
+            Loading requirements…
+          </div>
+        ) : (
+          <TraceabilityMatrix rows={rows} error={error} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }) {
   const [activeTab, setActiveTab] = useState('financial')
 
   const departments = [
@@ -576,6 +700,10 @@ export default function ResultsPanel({ data, onExportPDF, onExportExcel }) {
 
       <BidScoreCard complianceChecklist={data.complianceChecklist} />
       <RiskFlagSummary complianceChecklist={data.complianceChecklist} />
+      {/* Contract Risk (§5.4) — sits next to the Risk Flag Summary because the
+          two answer adjacent questions: that one is the AI compliance verdict,
+          this one is what pattern-matching found in the contract terms. */}
+      <ContractRiskCard rfpId={rfpId} />
       <SummaryCard summary={data.summary} />
 
       {/* RE-STYLED Deliverables */}
@@ -673,6 +801,9 @@ export default function ResultsPanel({ data, onExportPDF, onExportExcel }) {
           </div>
         </div>
       </div>
+
+      {/* Traceability Matrix (§4.5) */}
+      <TraceabilityCard rfpId={rfpId} />
 
     </div>
   )
