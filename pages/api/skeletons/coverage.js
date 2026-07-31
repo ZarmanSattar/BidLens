@@ -1,20 +1,26 @@
 const {
   loadCoverableRequirements,
-  loadSkeletons,
   computeCoverage,
   SKELETON_ROLES,
 } = require('../../../lib/response/coverage')
+const {
+  loadLibrary,
+  loadSkeletons,
+  loadRequirementChanges,
+  evaluateStaleness,
+} = require('../../../lib/response/skeletonStore')
 
 // §8.4 — response coverage for one RFP.
 //
 //   POST application/json  {"rfp_id": "..."}
 //
-// ZERO TOKEN COST. Two table reads and some arithmetic. There is no AI in this
-// route and none can be reached from it — §8.3's generation pass is Part 2.
+// ZERO TOKEN COST. Table reads and arithmetic. No AI here and none reachable
+// from it — generation lives behind /api/response/build and a button.
 //
-// Until then this correctly reports 0 covered of N. That is the honest answer,
-// not a placeholder: the table is real, the query is real, and the number will
-// move on its own the moment Part 2 writes its first skeleton.
+// "Covered" means CURRENT, not merely present. A draft whose library entry was
+// edited, whose cited entry was deleted, or whose requirement an amendment
+// reworded is counted as work still to do, because that is what it is. The
+// three rules come from §8.2 and are evaluated live; nothing is stored.
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -40,7 +46,15 @@ export default async function handler(req, res) {
         .json({ error: `Invalid rfp_id: ${requirementsError}` })
     }
 
-    const { skeletons, error: skeletonError } = await loadSkeletons(requirements)
+    const [
+      { skeletons, error: skeletonError },
+      { entries: library, error: libraryError },
+      { changed },
+    ] = await Promise.all([
+      loadSkeletons(requirements),
+      loadLibrary(),
+      loadRequirementChanges(requirements),
+    ])
 
     if (skeletonError) {
       return res.status(500).json({
@@ -48,17 +62,62 @@ export default async function handler(req, res) {
       })
     }
 
-    const coverage = computeCoverage(requirements, skeletons)
+    const libraryById = new Map(library.map((entry) => [entry.id, entry]))
+
+    // Split what exists into current and stale. Only current counts as covered.
+    const current = new Map()
+    const stale = []
+
+    const byRequirement = new Map(requirements.map((row) => [row.id, row]))
+
+    for (const [requirementId, skeleton] of skeletons) {
+      const verdict = evaluateStaleness(skeleton, libraryById, changed)
+
+      if (!verdict.stale) {
+        current.set(requirementId, skeleton)
+
+        continue
+      }
+
+      const requirement = byRequirement.get(requirementId)
+
+      stale.push({
+        requirementId,
+        reqNumber: skeleton.req_number || requirement?.req_number || null,
+        department: requirement?.department || null,
+        reasons: verdict.reasons,
+        detail: verdict.detail,
+        updatedAt: skeleton.updated_at,
+      })
+    }
+
+    const coverage = computeCoverage(requirements, current)
 
     return res.status(200).json({
       rfp_id: rfpId,
       ...coverage,
-      // Stated so the UI never has to guess why everything is uncovered.
-      generation_available: false,
+      // Present but no longer trustworthy. Counted in `missing`, because
+      // that is the work the build button will actually redo.
+      stale: stale.length,
+      staleItems: stale,
+      library_entries: library.length,
+      library_error: libraryError,
+      // Generation exists now. The card uses this to decide whether to offer
+      // the button at all.
+      generation_available: library.length > 0,
+      progress: {
+        total: coverage.total,
+        drafted: coverage.covered,
+        remaining: coverage.missing,
+        restored: coverage.covered,
+        complete: coverage.total > 0 && coverage.missing === 0,
+      },
       note:
         coverage.total === 0
           ? 'This RFP has no work requirements or evaluation factors to respond to. Shred it first.'
-          : 'Response generation (§8.3) is not built yet, so nothing has been drafted. This counter reads the real table and will update itself once generation lands.',
+          : library.length === 0
+            ? 'The content library is empty, so a draft would have nothing of yours to build from. Add library entries before generating.'
+            : null,
       roles_counted: SKELETON_ROLES,
     })
   } catch (err) {
