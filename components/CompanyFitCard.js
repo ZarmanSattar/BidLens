@@ -216,7 +216,6 @@ export default function CompanyFitCard({ rfpId }) {
   // renders identically when all of it is empty.
   const [judging, setJudging] = useState(false)
   const [judgeNotice, setJudgeNotice] = useState(null)
-  const [judgeDone, setJudgeDone] = useState(false)
 
   useEffect(() => {
     if (!rfpId) {
@@ -228,9 +227,10 @@ export default function CompanyFitCard({ rfpId }) {
     async function load() {
       setLoading(true)
       setError(null)
-      // A different RFP's judgments must never survive onto a new check.
+      // A different RFP's notices must never survive onto a new check. The
+      // judgments themselves now come back from the server with the blocker
+      // load, so there is no client-side copy to clear.
       setJudgeNotice(null)
-      setJudgeDone(false)
 
       try {
         const response = await fetch('/api/fit/blockers', {
@@ -266,7 +266,17 @@ export default function CompanyFitCard({ rfpId }) {
 
   const fit = data?.fit
   const clearCount = data?.clear_count ?? 0
-  const estimate = estimateJudgeTokens(clearCount)
+
+  // Progress comes from the SERVER on every response — both the free blocker
+  // load and the judgment call — because fit_judgments is the source of truth
+  // now, not component state. `remaining` is what the next click would cost.
+  const progress = data?.progress
+  const remaining = progress ? progress.remaining : clearCount
+  const complete = Boolean(progress?.complete)
+
+  // Estimate what is LEFT, not the whole document. After a partial run, the
+  // number on the button has to be the price of continuing.
+  const estimate = estimateJudgeTokens(remaining)
 
   // §6.3 — opt-in, one call, never fired on render. Mirrors ContractRiskCard's
   // explain button and the shredder's deliberate two-step.
@@ -283,6 +293,17 @@ export default function CompanyFitCard({ rfpId }) {
 
       const payload = await response.json().catch(() => ({}))
 
+      // Even a 429 carries progress and a score built from what IS saved, so
+      // the state is adopted before the error branch returns. Anything already
+      // written to fit_judgments is not lost by a failed continuation.
+      if (payload.progress) {
+        setData((previous) => ({
+          ...previous,
+          fit: payload.fit || previous.fit,
+          progress: payload.progress,
+        }))
+      }
+
       if (!response.ok) {
         setJudgeNotice({
           tone: 'warning',
@@ -294,34 +315,37 @@ export default function CompanyFitCard({ rfpId }) {
         return
       }
 
-      // The route returns a fully recombined score, so the whole card switches
-      // from provisional to complete in one assignment.
-      setData((previous) => ({ ...previous, fit: payload.fit }))
-      setJudgeDone(true)
+      const done = payload.progress?.judged ?? 0
+      const left = payload.progress?.remaining ?? 0
+      const thisCall = payload.progress?.judged_this_call ?? 0
 
-      const judged = payload.stats?.judged || 0
-
-      if (payload.degraded || judged === 0) {
+      if (left === 0) {
+        // Nothing further to spend on. Only now does the button retire.
+        setJudgeNotice(
+          thisCall === 0
+            ? { tone: 'info', text: payload.message || 'Already judged — no AI call was needed.' }
+            : null
+        )
+      } else if (thisCall === 0) {
         setJudgeNotice({
           tone: 'warning',
           text:
             payload.message ||
-            'No fit judgments were generated. The blocker checks below are unaffected.',
+            'No new requirements could be judged this time. Anything already saved is unaffected — try again.',
         })
-      } else if (judged < clearCount) {
+      } else {
         // A partial run is the expected outcome on a rate-limited tier, not a
         // fault: ~20,000 tokens of work does not fit in a 12,000-token rolling
-        // window. Say what happened and that re-running continues, rather than
-        // leaving the shortfall to look like a bug.
+        // window. Progress IS saved, so say so and say what continuing costs.
         const stopped = payload.stats?.aborted
 
         setJudgeNotice({
           tone: 'info',
           text:
-            `Judged ${judged} of ${clearCount} unblocked requirements` +
+            `Judged ${thisCall} more — ${done} of ${payload.progress.total} now done, ${left} to go. ` +
             (stopped
-              ? `. Groq's rate limit stopped the run after ${payload.stats.batches} of ${payload.stats.plannedBatches} batches — the score above covers what was judged. Try again once the limit resets.`
-              : '. The rest are shown without a verdict.'),
+              ? "Groq's rate limit stopped the run early. Everything judged so far is saved; press the button again once the limit resets to continue where it left off."
+              : 'Everything judged so far is saved. Press the button again to continue.'),
         })
       }
     } catch (err) {
@@ -385,12 +409,17 @@ export default function CompanyFitCard({ rfpId }) {
             <ScoreDial fit={fit} />
 
             {/* §6.3 trigger. Opt-in by design — everything above is free and
-                automatic, this costs tokens and only runs on click. */}
+                automatic, this costs tokens and only runs on click.
+                The button retires ONLY when nothing is left to judge. A
+                partial run leaves it live, because pressing it again now
+                continues from the saved judgments instead of starting over. */}
             <div className="d-flex flex-wrap align-items-center gap-2 my-3 py-3 border-top border-bottom">
               <button
                 className="btn btn-sm btn-outline-primary fw-semibold"
                 onClick={handleJudge}
-                disabled={judging || judgeDone || !data.has_profile || clearCount === 0}
+                disabled={
+                  judging || complete || !data.has_profile || clearCount === 0
+                }
               >
                 {judging ? (
                   <>
@@ -400,14 +429,16 @@ export default function CompanyFitCard({ rfpId }) {
                     />
                     Judging fit…
                   </>
-                ) : judgeDone ? (
+                ) : complete ? (
                   '✓ Fit judged'
+                ) : progress && progress.judged > 0 ? (
+                  `✨ Continue judging (${remaining} left)`
                 ) : (
                   '✨ Judge fit with AI'
                 )}
               </button>
 
-              {!judgeDone && (
+              {!complete && (
                 <span className="text-muted" style={{ fontSize: '0.78rem' }}>
                   {!data.has_profile
                     ? 'Needs a company profile first.'
@@ -415,12 +446,29 @@ export default function CompanyFitCard({ rfpId }) {
                       ? 'Every requirement is already blocked — nothing left to judge.'
                       : `Uses AI · ${estimate.batches} call${
                           estimate.batches === 1 ? '' : 's'
-                        } for ${clearCount} unblocked requirement${
-                          clearCount === 1 ? '' : 's'
+                        } for ${remaining} remaining requirement${
+                          remaining === 1 ? '' : 's'
                         } · ${estimate.label}`}
                 </span>
               )}
+
+              {progress && progress.judged > 0 && (
+                <span
+                  className="badge bg-light text-dark border"
+                  style={{ fontSize: '0.72rem' }}
+                >
+                  {progress.judged} of {progress.total} judged
+                  {complete ? '' : ` · ${remaining} to go`}
+                </span>
+              )}
             </div>
+
+            {data.judgments_error && (
+              <div className="alert alert-warning py-2" style={{ fontSize: '0.85rem' }}>
+                Saved fit judgments could not be read ({data.judgments_error}).
+                The blocker checks below are unaffected.
+              </div>
+            )}
 
             {judgeNotice && (
               <div

@@ -1,5 +1,6 @@
 const { checkBlockers } = require('../../../lib/fit/blockerCheck')
 const { computeFitScore } = require('../../../lib/fit/fitScore')
+const { loadJudgments } = require('../../../lib/fit/judgmentStore')
 const {
   loadCompanyProfile,
   loadWorkRequirements,
@@ -52,10 +53,41 @@ export default async function handler(req, res) {
 
     const { blockers, clear, stats } = checkBlockers(requirements, profile)
 
-    const fit = computeFitScore({ blockers, blockerStats: stats })
+    // Saved §6.3 judgments for the CURRENT profile. Reading them here is what
+    // makes persistence visible: without it a reload would show "not assessed"
+    // while the database held 83 verdicts, and the user would have to re-spend
+    // tokens to see a score they had already paid for. Still zero tokens — this
+    // is a table read, and a stale-profile judgment is simply not returned.
+    const { judgments: restored, error: restoreError } = await loadJudgments(
+      clear,
+      profile?.updated_at
+    )
+
+    const judgments = {}
+
+    clear.forEach((requirement, offset) => {
+      const judgment = restored.get(requirement.id)
+
+      if (judgment) {
+        judgments[String(offset + 1)] = { ...judgment, index: offset + 1 }
+      }
+    })
+
+    const fit = computeFitScore({ blockers, blockerStats: stats, judgments })
 
     return res.status(200).json({
       rfp_id: rfpId,
+      judgments,
+      progress: {
+        total: clear.length,
+        judged: restored.size,
+        remaining: clear.length - restored.size,
+        restored: restored.size,
+        complete: clear.length > 0 && restored.size >= clear.length,
+      },
+      // Surfaced rather than thrown: the blocker half is still completely
+      // valid, and a card that renders it with a note beats an error page.
+      judgments_error: restoreError,
       // A profile that has not been filled in is reported plainly rather than
       // as an error: the honest answer is "nothing could be checked", and the
       // UI needs to say that instead of showing a reassuring zero.
