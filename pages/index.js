@@ -450,8 +450,6 @@ export default function Home() {
         if (rfpError) {
           setSaveError('Analysis complete, but saving to history failed: ' + rfpError.message)
         } else {
-          setRfpId(rfpRow.id)
-
           // §7.1 — record what the package was made of. Only written when
           // there IS a package: a lone file leaves this empty, which is
           // exactly the state every RFP uploaded before this feature is in,
@@ -488,6 +486,12 @@ export default function Home() {
               )
             }
           }
+
+          // Published only once rfp_files is written. The cards that take an
+          // rfpId fetch the moment they receive one, and §7.2's cross-file
+          // check reads rfp_files — handing out the id any earlier races that
+          // insert and the check sees a package with no files in it.
+          setRfpId(rfpRow.id)
 
           const { error: analysisError } = await supabase
             .from('analyses')

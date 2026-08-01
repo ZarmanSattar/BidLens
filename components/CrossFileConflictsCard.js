@@ -71,7 +71,10 @@ function ConflictRow({ conflict }) {
   )
 }
 
-export default function CrossFileConflictsCard({ rfpId }) {
+export default function CrossFileConflictsCard({
+  rfpId,
+  hideWhenNothingToCompare = false,
+}) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -120,6 +123,15 @@ export default function CrossFileConflictsCard({ rfpId }) {
   }, [rfpId])
 
   const conflicts = data?.conflicts || []
+
+  // The results panel mounts this card for every analysis, and most uploads are
+  // a single file. "Nothing to compare" is the honest answer on /amendments,
+  // where the package is the subject; in a results panel it would be a
+  // permanent empty card on the common path. `data` is null while loading and
+  // after a failure, so this also keeps the spinner from flashing there.
+  if (hideWhenNothingToCompare && !data?.stats?.comparable) {
+    return null
+  }
 
   return (
     <div className="card mb-4 shadow-sm border-0">

@@ -8,6 +8,7 @@ import TraceabilityMatrix, {
 } from './TraceabilityMatrix'
 import ContractRiskCard from './ContractRiskCard'
 import CompanyFitCard from './CompanyFitCard'
+import CrossFileConflictsCard from './CrossFileConflictsCard'
 import { supabase } from '../lib/supabase/client'
 
 const statusColors = {
@@ -717,6 +718,12 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
           next question in the same sequence: that card says what the contract
           asks of any bidder, this one says what it asks of THIS company. */}
       <CompanyFitCard rfpId={rfpId} />
+      {/* Cross-File Consistency (§7.2) — last of the three zero-token cards,
+          because it is the only one that asks about the package rather than
+          the contract. It hides itself entirely unless this RFP was uploaded
+          with attachments, so a single-file analysis looks exactly as it did
+          before. */}
+      <CrossFileConflictsCard rfpId={rfpId} hideWhenNothingToCompare />
       <SummaryCard summary={data.summary} />
 
       {/* RE-STYLED Deliverables */}
