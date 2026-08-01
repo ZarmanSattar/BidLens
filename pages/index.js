@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/router'
 import Link from 'next/link'
 import ResultsPanel from '../components/ResultsPanel'
+import { exportReportPdf } from '../utils/exportReportPdf'
 import { supabase } from '../lib/supabase/client'
 
 function formatFileSize(bytes) {
@@ -9,110 +10,6 @@ function formatFileSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
-function exportToPDF(results) {
-  import('jspdf').then(({ default: jsPDF }) => {
-    import('jspdf-autotable').then(({ default: autoTable }) => {
-      const doc = new jsPDF()
-      const pageWidth = doc.internal.pageSize.getWidth()
-
-      doc.setFontSize(20)
-      doc.setTextColor(13, 110, 253)
-      doc.text('BidLens — RFP Analysis Report', pageWidth / 2, 18, { align: 'center' })
-
-      if (results.summary) {
-        doc.setFontSize(13)
-        doc.setTextColor(33, 37, 41)
-        doc.text('RFP Summary', 14, 30)
-        autoTable(doc, {
-          startY: 34,
-          head: [['Field', 'Value']],
-          body: [
-            ['Issuing Agency', results.summary.issuingAgency || 'N/A'],
-            ['Project Title', results.summary.projectTitle || 'N/A'],
-            ['RFP Number', results.summary.rfpNumber || 'N/A'],
-            ['Contract Value', results.summary.contractValue || 'N/A'],
-            ['Submission Deadline', results.summary.submissionDeadline || 'N/A'],
-            ['Project Duration', results.summary.projectDuration || 'N/A'],
-          ],
-          theme: 'grid',
-          headStyles: { fillColor: [108, 117, 125] },
-          styles: { fontSize: 9 },
-        })
-      }
-
-      const afterSummary = doc.lastAutoTable.finalY + 8
-      doc.setFontSize(13)
-      doc.setTextColor(33, 37, 41)
-      doc.text('Deliverables', 14, afterSummary)
-      autoTable(doc, {
-        startY: afterSummary + 4,
-        head: [['#', 'Deliverable']],
-        body: (results.deliverables || []).map((item, i) => [i + 1, item]),
-        theme: 'striped',
-        headStyles: { fillColor: [13, 110, 253] },
-        styles: { fontSize: 9 },
-        columnStyles: { 0: { cellWidth: 10 } },
-      })
-
-      const afterDeliverables = doc.lastAutoTable.finalY + 8
-      doc.setFontSize(13)
-      doc.text('Evaluation Criteria', 14, afterDeliverables)
-      autoTable(doc, {
-        startY: afterDeliverables + 4,
-        head: [['#', 'Criterion']],
-        body: (results.evaluationCriteria || []).map((item, i) => [i + 1, item]),
-        theme: 'striped',
-        headStyles: { fillColor: [13, 202, 240] },
-        styles: { fontSize: 9 },
-        columnStyles: { 0: { cellWidth: 10 } },
-      })
-
-      const departments = [
-        { key: 'financial', label: 'Financial', color: [255, 193, 7] },
-        { key: 'legal', label: 'Legal', color: [220, 53, 69] },
-        { key: 'operations', label: 'Operations', color: [108, 117, 125] },
-        { key: 'technical', label: 'Technical', color: [13, 110, 253] },
-      ]
-
-      for (const dept of departments) {
-        const items = results.complianceChecklist?.[dept.key] || []
-        if (items.length === 0) continue
-        const startY = doc.lastAutoTable.finalY + 8
-        doc.setFontSize(13)
-        doc.setTextColor(33, 37, 41)
-        doc.text(`Compliance — ${dept.label}`, 14, startY)
-        autoTable(doc, {
-          startY: startY + 4,
-          head: [['Task', 'Status', 'Reason']],
-          body: items.map(item => [item.task, item.status, item.reason || '']),
-          theme: 'grid',
-          headStyles: { fillColor: dept.color },
-          styles: { fontSize: 8, cellPadding: 3 },
-          columnStyles: {
-            0: { cellWidth: 70 },
-            1: { cellWidth: 20, halign: 'center' },
-            2: { cellWidth: 90 },
-          },
-        })
-      }
-
-      const pageCount = doc.internal.getNumberOfPages()
-      for (let i = 1; i <= pageCount; i++) {
-        doc.setPage(i)
-        doc.setFontSize(8)
-        doc.setTextColor(150)
-        doc.text(
-          `BidLens RFP Analysis — Page ${i} of ${pageCount}`,
-          pageWidth / 2,
-          doc.internal.pageSize.getHeight() - 8,
-          { align: 'center' }
-        )
-      }
-
-      doc.save('BidLens_RFP_Analysis.pdf')
-    })
-  })
-}
 
 function exportToExcel(results) {
   import('xlsx').then((XLSX) => {
@@ -732,7 +629,11 @@ export default function Home() {
             <ResultsPanel
               data={results}
               rfpId={rfpId}
-              onExportPDF={() => exportToPDF(results)}
+              // A3 — the same button, now producing the full report (cover,
+              // summary, risks, fit, requirements) instead of a bare table
+              // dump. rfpId enables the fit section; without it that section
+              // says so rather than being silently omitted.
+              onExportPDF={() => exportReportPdf(results, { rfpId })}
               onExportExcel={() => exportToExcel(results)}
             />
           )}

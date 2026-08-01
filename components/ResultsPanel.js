@@ -9,6 +9,8 @@ import TraceabilityMatrix, {
 import ContractRiskCard from './ContractRiskCard'
 import CompanyFitCard from './CompanyFitCard'
 import CrossFileConflictsCard from './CrossFileConflictsCard'
+import HeadlineNumbers from './HeadlineNumbers'
+import RfpChatCard from './RfpChatCard'
 import { supabase } from '../lib/supabase/client'
 
 const statusColors = {
@@ -58,8 +60,12 @@ function calculateBidScore(complianceChecklist) {
 
 // ── Risk Flag Collection ──────────────────────────────────
 
+// The keys complianceChecklist is an object OF. It is not, and has never been,
+// an array — anything counting or walking it has to go through these.
+const CHECKLIST_DEPARTMENTS = ['financial', 'legal', 'operations', 'technical']
+
 function collectRiskFlags(complianceChecklist) {
-  const departments = ['financial', 'legal', 'operations', 'technical']
+  const departments = CHECKLIST_DEPARTMENTS
   const noGoItems = []
   const highPriorityEscalations = []
 
@@ -676,6 +682,24 @@ function TraceabilityCard({ rfpId }) {
 export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }) {
   const [activeTab, setActiveTab] = useState('financial')
 
+  // A2 — the same count the Risk Flag Summary renders below, computed once
+  // here and handed to both rather than counted twice from the same list.
+  const { noGoItems, highPriorityEscalations } = collectRiskFlags(
+    data.complianceChecklist
+  )
+
+  const headlineRiskCount = noGoItems.length + highPriorityEscalations.length
+
+  // complianceChecklist is an OBJECT keyed by department — { legal: [...],
+  // financial: [...], technical: [...], operations: [...] } — never an array.
+  // Counting it with Array.isArray()/.length therefore produced null on every
+  // RFP, which is why the tile always read "—" while the checklist below it
+  // rendered fine. Summed the same way collectRiskFlags above walks it.
+  const headlineRequirementCount = CHECKLIST_DEPARTMENTS.reduce(
+    (total, dept) => total + (data.complianceChecklist?.[dept]?.length || 0),
+    0
+  )
+
   const departments = [
     { key: 'financial', label: '🏦 Financial' },
     { key: 'legal', label: '⚖️ Legal' },
@@ -708,6 +732,16 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
         </button>
       </div>
 
+      {/* A2 — the four numbers first, before any card. Every value here is
+          already computed elsewhere on this page; the strip reads them rather
+          than deriving its own. */}
+      <HeadlineNumbers
+        rfpId={rfpId}
+        requirementCount={headlineRequirementCount}
+        riskCount={headlineRiskCount}
+        deadlineText={data.summary?.submissionDeadline || null}
+      />
+
       <BidScoreCard complianceChecklist={data.complianceChecklist} />
       <RiskFlagSummary complianceChecklist={data.complianceChecklist} />
       {/* Contract Risk (§5.4) — sits next to the Risk Flag Summary because the
@@ -724,6 +758,10 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
           with attachments, so a single-file analysis looks exactly as it did
           before. */}
       <CrossFileConflictsCard rfpId={rfpId} hideWhenNothingToCompare />
+      {/* A1 — sits directly under the analysis cards because it answers the
+          question those cards provoke: "where does it say that?". Costs tokens
+          per question and never fires on its own. */}
+      <RfpChatCard rfpId={rfpId} />
       <SummaryCard summary={data.summary} />
 
       {/* RE-STYLED Deliverables */}

@@ -4,6 +4,7 @@ import { useRouter } from 'next/router'
 import ResultsPanel from '../components/ResultsPanel'
 import { supabase } from '../lib/supabase/client'
 import { formatDate } from '../utils/formatDate'
+import { getDaysRemaining } from '../utils/deadline'
 
 function exportToPDF(results) {
   import('jspdf').then(({ default: jsPDF }) => {
@@ -219,23 +220,9 @@ function getBidScore(complianceChecklist) {
   return Math.round((earned / maxPoints) * 100)
 }
 
-function parseDeadline(deadlineStr) {
-  if (!deadlineStr) return null
-  const cleaned = deadlineStr
-    .replace(/at\s+\d+:\d+\s*(AM|PM)?\s*(EST|CST|PST|EDT|CDT|PDT|UTC)?/i, '')
-    .trim()
-  const parsed = new Date(cleaned)
-  return isNaN(parsed.getTime()) ? null : parsed
-}
-
-function getDaysRemaining(deadlineStr) {
-  const deadline = parseDeadline(deadlineStr)
-  if (!deadline) return null
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const diff = Math.ceil((deadline - today) / (1000 * 60 * 60 * 24))
-  return diff
-}
+// parseDeadline / getDaysRemaining moved to utils/deadline.js when A2's
+// headline strip and A4's alert check needed the same parsing. Imported at the
+// top of this file — behaviour is unchanged, there is just one copy now.
 
 export default function Dashboard() {
   const router = useRouter()
