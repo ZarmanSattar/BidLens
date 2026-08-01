@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { useState } from 'react'
 import CompanyProfileForm from '../components/CompanyProfileForm'
+import { formatDateTime } from '../utils/formatDate'
 
 // §6.1 — the company profile settings page.
 //
@@ -93,7 +94,9 @@ export default function CompanyProfilePage({ profile, error }) {
 
         {saved?.updated_at && (
           <p className="text-muted small">
-            Last saved {new Date(saved.updated_at).toLocaleString()}
+            {/* Fixed locale AND fixed zone — this page is server-rendered, so
+                anything machine-dependent here mismatches on hydration. */}
+            Last saved {formatDateTime(saved.updated_at)}
           </p>
         )}
 
