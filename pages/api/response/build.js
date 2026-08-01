@@ -162,8 +162,58 @@ export default async function handler(req, res) {
       },
     })
 
-    const draftedTotal = alreadyCurrent + Object.keys(skeletons).length
+    // What the model produced in memory. NOT the same thing as what exists in
+    // the database, which is the entire point of everything below.
+    const generated = Object.keys(skeletons).length
+
+    // THE SOURCE OF TRUTH. Re-read what is actually stored and re-apply the
+    // same currency test `pending` used above, so "drafted" means "this
+    // requirement has a current draft ON DISK" — the same number
+    // /api/skeletons/coverage will report on the next page load. Deriving it
+    // from the in-memory `skeletons` object is what let a run where every
+    // single write failed still report 109 of 109 drafted.
+    const { skeletons: persisted, error: verifyError } =
+      await loadSkeletons(requirements)
+
+    if (verifyError) {
+      return res.status(500).json({
+        error:
+          'Drafts were generated but the saved count could not be verified: ' +
+          verifyError,
+        rfp_id: rfpId,
+        stats,
+      })
+    }
+
+    const draftedTotal = requirements.filter((requirement) => {
+      const skeleton = persisted.get(requirement.id)
+
+      return skeleton && !evaluateStaleness(skeleton, libraryById, changed).stale
+    }).length
+
     const remaining = requirements.length - draftedTotal
+
+    // A draft that was produced but never reached the table. saveSkeletons
+    // reports its own failures through `saveError`, but a hook that THROWS is
+    // caught and logged inside buildSkeletons and never sets it — which is
+    // exactly how the temporal-dead-zone bug stayed silent through eleven
+    // batches. Comparing produced against written catches that whole class of
+    // failure without depending on the error channel working.
+    const unsavedDrafts = Math.max(0, generated - saved)
+
+    const progress = {
+      total: requirements.length,
+      drafted: draftedTotal,
+      remaining,
+      restored: alreadyCurrent,
+      // What this call actually WROTE, and what it produced. When the two
+      // disagree, something between the model and the table went wrong.
+      drafted_this_call: saved,
+      generated_this_call: generated,
+      saved,
+      unsaved: unsavedDrafts,
+      complete: remaining <= 0,
+    }
 
     // A rate limit reached before anything new landed is the one case the
     // caller should be able to distinguish, so it can say to wait.
@@ -174,37 +224,42 @@ export default async function handler(req, res) {
           'Anything already saved is unaffected — wait for the limit to reset ' +
           'and press the button again to continue.',
         rfp_id: rfpId,
-        progress: {
-          total: requirements.length,
-          drafted: draftedTotal,
-          remaining,
-          restored: alreadyCurrent,
-          drafted_this_call: 0,
-          complete: false,
-        },
+        progress,
         stats,
+      })
+    }
+
+    // Generation succeeding while persistence fails is a FAILED run, not a
+    // degraded one. It used to return 200 with the error tucked into a message
+    // field the caller could ignore; now it cannot be mistaken for success.
+    if (saveError || unsavedDrafts > 0) {
+      const detail = saveError
+        ? `The write was rejected: ${saveError}`
+        : `${unsavedDrafts} generated draft(s) never reached the database. ` +
+          'Check the server log for "[response/build] onBatch hook failed" or ' +
+          '"[response/store] batch write".'
+
+      console.error('[response/build] PERSISTENCE FAILURE —', detail)
+
+      return res.status(500).json({
+        error: `Drafts were generated but not saved. ${detail}`,
+        save_error: saveError || null,
+        unsaved_drafts: unsavedDrafts,
+        rfp_id: rfpId,
+        skeletons,
+        progress,
+        stats,
+        degraded: true,
       })
     }
 
     return res.status(200).json({
       rfp_id: rfpId,
       skeletons,
-      progress: {
-        total: requirements.length,
-        drafted: draftedTotal,
-        remaining,
-        restored: alreadyCurrent,
-        drafted_this_call: stats.drafted,
-        saved,
-        complete: remaining <= 0,
-      },
+      progress,
       stats,
       degraded: Boolean(buildError) || remaining > 0,
-      message:
-        buildError?.message ||
-        (saveError
-          ? `Drafts were generated but could not all be saved (${saveError}).`
-          : null),
+      message: buildError?.message || null,
     })
   } catch (err) {
     console.error('[response/build] request failed:', err?.message)
