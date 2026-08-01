@@ -146,8 +146,13 @@ export default async function handler(req, res) {
       // Written as each batch lands. The library stamp is captured ONCE for
       // the whole run, so a library edited mid-run correctly leaves the
       // earlier batches marked stale rather than silently blessed.
-      onBatch: async (batch) => {
-        const result = await saveSkeletons(batch, latestUpdatedAt, stats?.model)
+      // `meta.model`, NOT `stats.model`: this hook runs DURING the call below,
+      // so the `stats` binding this statement declares is still in its temporal
+      // dead zone and reading it throws — silently, because the hook's errors
+      // are caught and logged by buildSkeletons. That is what made every batch
+      // fail to save while the run still reported 109/109 drafted.
+      onBatch: async (batch, meta) => {
+        const result = await saveSkeletons(batch, latestUpdatedAt, meta?.model)
 
         saved += result.saved
 
