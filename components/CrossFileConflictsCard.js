@@ -199,7 +199,9 @@ export default function CrossFileConflictsCard({
           Detected by pattern matching across each file separately — no AI was
           used and no tokens were spent. Only values stated explicitly enough to
           compare are checked; silence in one file is never treated as
-          disagreement.
+          disagreement. Page numbers count through the whole package rather than
+          restarting at each file, so they match the ones the Contract Risk card
+          cites.
         </div>
       </div>
     </div>
