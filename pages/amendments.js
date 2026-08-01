@@ -212,6 +212,11 @@ export default function AmendmentsPage({ rfpId, rfps, loadError }) {
   const recommendation = comparison?.recommendation
   const stale = comparison?.stale_judgments || []
 
+  // The RFP in the URL is always the AMENDED side of the pair. Naming it back
+  // to the user is what stops the two sides being chosen the wrong way round.
+  const currentTitle =
+    rfps.find((rfp) => rfp.id === rfpId)?.title || 'the RFP you started from'
+
   return (
     <>
       <nav className="navbar navbar-dark bg-dark px-4">
@@ -238,21 +243,28 @@ export default function AmendmentsPage({ rfpId, rfps, loadError }) {
 
         {!rfpId ? (
           <div className="alert alert-info">
-            <strong>No RFP selected.</strong>
+            <strong>Start from the AMENDMENT — the newer, revised RFP.</strong>
             <div className="mt-2 small">
-              Open this page with an RFP id: <code>/amendments?rfp_id=&lt;uuid&gt;</code>
+              Pick the revised solicitation below. On the next step you will
+              choose which earlier version it replaces. Starting from the
+              earlier version instead records the pair backwards.
             </div>
             {rfps.length > 0 && (
-              <ul className="mt-3 mb-0 ps-3">
-                {rfps.map((rfp) => (
-                  <li key={rfp.id}>
-                    <Link href={`/amendments?rfp_id=${rfp.id}`}>{rfp.title}</Link>{' '}
-                    <span className="text-muted small">
-                      · {formatDate(rfp.created_at)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <div className="mt-3 mb-1 small fw-semibold text-uppercase text-muted">
+                  Choose the amendment (newest first)
+                </div>
+                <ul className="mb-0 ps-3">
+                  {rfps.map((rfp) => (
+                    <li key={rfp.id}>
+                      <Link href={`/amendments?rfp_id=${rfp.id}`}>{rfp.title}</Link>{' '}
+                      <span className="text-muted small">
+                        · uploaded {formatDate(rfp.created_at)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
           </div>
         ) : loading ? (
@@ -272,14 +284,22 @@ export default function AmendmentsPage({ rfpId, rfps, loadError }) {
             {comparison && !comparison.linked && (
               <div className="card shadow-sm border-0 mb-4">
                 <div className="card-header bg-transparent border-bottom">
-                  <h5 className="mb-0 fw-bold text-primary">Link an original</h5>
+                  <h5 className="mb-0 fw-bold text-primary">
+                    Which earlier RFP does this replace?
+                  </h5>
                 </div>
                 <div className="card-body">
+                  <div className="alert alert-light border py-2 small mb-3">
+                    Recording <strong>{currentTitle}</strong> as the{' '}
+                    <strong>AMENDMENT</strong> — the revised version. Choose the{' '}
+                    <strong>ORIGINAL</strong> it replaces below. If{' '}
+                    {currentTitle} is actually the earlier version, go back and
+                    start from the newer one instead.
+                  </div>
                   <p className="text-muted small">
-                    This RFP is not recorded as an amendment yet. Pick the
-                    solicitation it amends and BidLens will diff the two
-                    requirement sets. Both must already be shredded. This costs
-                    nothing — the comparison is plain text matching, no AI.
+                    BidLens will diff the two requirement sets. Both must
+                    already be shredded. This costs nothing — the comparison is
+                    plain text matching, no AI.
                   </p>
                   <div className="d-flex gap-2 flex-wrap align-items-center">
                     <select
@@ -288,7 +308,9 @@ export default function AmendmentsPage({ rfpId, rfps, loadError }) {
                       value={originalChoice}
                       onChange={(e) => setOriginalChoice(e.target.value)}
                     >
-                      <option value="">Select the original RFP…</option>
+                      <option value="">
+                        Select the ORIGINAL / base version…
+                      </option>
                       {rfps
                         .filter((rfp) => rfp.id !== rfpId)
                         .map((rfp) => (
@@ -320,6 +342,9 @@ export default function AmendmentsPage({ rfpId, rfps, loadError }) {
                       <div className="fw-semibold text-dark">
                         {comparison.original.title}
                       </div>
+                      <div className="text-muted" style={{ fontSize: '0.78rem' }}>
+                        the earlier version
+                      </div>
                     </div>
                     <div className="fs-4 text-muted">→</div>
                     <div>
@@ -328,6 +353,9 @@ export default function AmendmentsPage({ rfpId, rfps, loadError }) {
                       </div>
                       <div className="fw-semibold text-dark">
                         {comparison.amended.title}
+                      </div>
+                      <div className="text-muted" style={{ fontSize: '0.78rem' }}>
+                        the revised version you started from
                       </div>
                     </div>
                   </div>

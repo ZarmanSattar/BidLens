@@ -384,6 +384,9 @@ export default function Dashboard() {
           <Link href="/content-library" className="btn btn-outline-light btn-sm">
             📚 Content Library
           </Link>
+          <Link href="/amendments" className="btn btn-outline-light btn-sm">
+            📑 Amendments
+          </Link>
           <button className="btn btn-outline-light btn-sm" onClick={handleSignOut}>Sign out</button>
         </div>
       </nav>
