@@ -76,6 +76,11 @@ export default function Home() {
   const [progressLabel, setProgressLabel] = useState('')
   const [showToast, setShowToast] = useState(false)
 
+  // B1 — set only when a scan was read by OCR, so the result carries a visible
+  // caveat rather than passing as an ordinary parse.
+  const [ocrNotice, setOcrNotice] = useState(null)
+  const [ocrProgress, setOcrProgress] = useState(null)
+
   // §7.1 — additional files bundled into the same RFP package. The base file
   // above is still the one that gets analyzed; these only contribute text.
   const [attachments, setAttachments] = useState([])
@@ -250,6 +255,63 @@ export default function Home() {
     return payload
   }
 
+  // B1 — render + OCR every page in the browser. Returns null (having already
+  // set an error) when it cannot produce usable text, so the caller can stop.
+  async function runOcrFallback(pdfFile) {
+    // Halts the simulated progress bar: OCR reports real progress, and two
+    // competing bars would be worse than one honest one.
+    clearInterval(progressTimerRef.current)
+    setProgressLabel('Reading scanned pages…')
+    setProgress(10)
+    setOcrProgress({ page: 0, pages: 0, stage: 'starting' })
+
+    try {
+      const { ocrPdf } = await import('../utils/ocrPdf')
+
+      const result = await ocrPdf(pdfFile, {
+        onProgress: (progressState) => {
+          setOcrProgress(progressState)
+
+          if (progressState.pages > 0) {
+            // 10-55% is the OCR share of the bar; the analysis call owns the rest.
+            setProgress(
+              10 + Math.round((progressState.page / progressState.pages) * 45)
+            )
+            setProgressLabel(
+              `Reading scanned page ${progressState.page} of ${progressState.pages}…`
+            )
+          }
+        },
+      })
+
+      setOcrProgress(null)
+
+      if (!result.chars) {
+        setError(
+          'These pages were rendered and read, but no text came out. The scan ' +
+            'may be too low-resolution, skewed, or handwritten. Re-scan at a ' +
+            'higher DPI, or re-export the file with OCR enabled.'
+        )
+
+        return null
+      }
+
+      return result
+    } catch (ocrError) {
+      setOcrProgress(null)
+      console.error('[ocr] failed:', ocrError)
+
+      setError(
+        'This looks like a scanned document, and reading it in the browser ' +
+          'failed: ' +
+          (ocrError?.message || 'unknown error') +
+          '. Re-export the file with OCR enabled and upload it again.'
+      )
+
+      return null
+    }
+  }
+
   async function handleAnalyze() {
     if (!file) return
     setLoading(true)
@@ -258,6 +320,8 @@ export default function Home() {
     setError(null)
     setSaveError(null)
     setShowToast(false)
+    setOcrNotice(null)
+    setOcrProgress(null)
     setProgress(0)
 
     startProgressSimulation()
@@ -275,9 +339,51 @@ export default function Home() {
         signal: controller.signal,
       })
 
-      const data = await response.json()
+      let data = await response.json()
 
-      if (!response.ok) {
+      // B1 — the server has established this PDF is a scan. Read it here, in
+      // the browser, and send the text back through the SAME route rather than
+      // giving up. Only ever entered on that specific 422: an ordinary text
+      // PDF never reaches this branch.
+      if (response.status === 422 && data.scanned_document && !data.ocr_attempted) {
+        const ocrResult = await runOcrFallback(file)
+
+        if (!ocrResult) {
+          stopProgressSimulation(false)
+
+          return
+        }
+
+        const ocrForm = new FormData()
+        ocrForm.append('ocr_pages', JSON.stringify(ocrResult.pages))
+        ocrForm.append('filename', file.name)
+
+        setProgressLabel('Analyzing the text we read…')
+        setProgress(60)
+
+        const ocrResponse = await fetch('/api/analyze', {
+          method: 'POST',
+          body: ocrForm,
+        })
+
+        data = await ocrResponse.json()
+
+        if (!ocrResponse.ok) {
+          stopProgressSimulation(false)
+          setError(data.error || 'The scanned pages could not be analysed.')
+
+          return
+        }
+
+        setOcrNotice(
+          `Read ${ocrResult.ocrPages} scanned page${ocrResult.ocrPages === 1 ? '' : 's'} ` +
+            `by OCR (${ocrResult.chars.toLocaleString()} characters)` +
+            (ocrResult.truncated
+              ? `. Only the first ${ocrResult.ocrPages} of ${ocrResult.pageCount} pages were read.`
+              : '.') +
+            ' OCR is not perfect — check anything that looks odd against the original.'
+        )
+      } else if (!response.ok) {
         stopProgressSimulation(false)
         setError(data.error || 'Something went wrong. Please try again.')
         return
@@ -504,6 +610,19 @@ export default function Home() {
           )}
         </div>
 
+        {/* Group C #11 — the privacy statement sits directly under the drop
+            zone, which is the one moment someone is deciding whether to hand
+            over a document. Rendered unconditionally so it is there before a
+            file is chosen, not only after. Deliberately a caption rather than
+            a banner: a reassurance that shouts reads as a warning. */}
+        <p
+          className="text-muted text-center mb-3"
+          style={{ fontSize: '0.78rem' }}
+        >
+          🔒 Documents you upload are used only to generate your analysis and
+          are never used to train any AI model.
+        </p>
+
         {/* §7.1 — attachments. Only offered once a base file is chosen, so the
             two roles cannot be confused: the base document is what gets
             analyzed, these are bundled with it. */}
@@ -620,6 +739,31 @@ export default function Home() {
                 style={{ width: `${progress}%`, transition: 'width 0.8s ease' }}
               />
             </div>
+          </div>
+        )}
+
+        {/* B1 — OCR is slow and entirely client-side, so it says what it is
+            doing page by page rather than looking like a hang. */}
+        {ocrProgress && (
+          <div className="alert alert-info d-flex align-items-center gap-3">
+            <span className="spinner-border spinner-border-sm" role="status" />
+            <div>
+              <strong>Reading scanned pages…</strong>
+              <div className="small">
+                {ocrProgress.pages > 0
+                  ? `Page ${ocrProgress.page} of ${ocrProgress.pages} — ${ocrProgress.stage}. `
+                  : 'Preparing… '}
+                This runs on your machine and can take a minute or two. Keep
+                this tab open.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {ocrNotice && (
+          <div className="alert alert-warning">
+            <strong>📷 Read by OCR.</strong>
+            <div className="small mt-1">{ocrNotice}</div>
           </div>
         )}
 

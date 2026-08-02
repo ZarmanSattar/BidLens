@@ -6,6 +6,7 @@ const {
 } = require('../../lib/ai/groqHelper')
 
 const { extractPages } = require('../../lib/shredder/extractPages')
+const { parseMultipart } = require('../../lib/shredder/multipart')
 
 export const config = {
   api: {
@@ -17,6 +18,13 @@ export const maxDuration = 60
 
 const NOT_SPECIFIED = 'Not specified in RFP'
 const MAX_RFP_TEXT_LENGTH = 18000
+
+// B1 — below this many characters per page, the document is treated as a scan
+// rather than as text. A genuine text PDF runs to hundreds or thousands; the
+// reference 44-page solicitation averages ~2,800. 100 is far enough below any
+// real document to avoid false positives and high enough to catch a scan whose
+// cover page happens to carry a title.
+const MIN_CHARS_PER_PAGE = 100
 
 const CHECKLIST_DEFINITIONS = {
   financial: [
@@ -753,6 +761,61 @@ function getBoundary(contentType) {
   )
 
   return (match?.[1] || match?.[2] || '').trim() || null
+}
+
+/**
+ * B1 — reads the client's OCR text out of the multipart body.
+ *
+ * Parsing is delegated to lib/shredder/multipart.js, which already splits a
+ * body into its file part and its text fields and is the parser §7.1 relies
+ * on. extractFileFromMultipart below is left exactly as it was: the file path
+ * must behave identically whether this field is present or not.
+ *
+ * @param {Buffer} buffer Raw request body.
+ * @param {string} boundary
+ * @returns {string[]|null} One string per page, or null when the field is
+ *   absent, malformed, or carries nothing but whitespace.
+ */
+function readOcrPages(buffer, boundary) {
+  let raw
+
+  try {
+    raw = parseMultipart(buffer, boundary)?.fields?.ocr_pages
+  } catch (error) {
+    console.error('[analyze] could not read multipart fields:', error?.message)
+
+    return null
+  }
+
+  if (!raw) {
+    return null
+  }
+
+  let parsed
+
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    console.error('[analyze] ocr_pages was not valid JSON:', error?.message)
+
+    return null
+  }
+
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    return null
+  }
+
+  // Page order and page count are preserved exactly — including pages OCR
+  // recovered nothing from, which stay as empty strings so a later page's
+  // number still means what it says.
+  //
+  // An all-blank result is returned, NOT treated as absence. The two mean
+  // completely different things: absence is "an ordinary file upload, use the
+  // file path", while all-blank is "OCR ran on a scan and got nothing", which
+  // has to reach the 422 that says so. Collapsing them sent the caller to the
+  // file branch, where it failed with "Could not extract the uploaded file" —
+  // an error about a file it had deliberately not sent.
+  return parsed.map((entry) => String(entry ?? ''))
 }
 
 function extractFileFromMultipart(buffer, boundary) {
@@ -4280,6 +4343,43 @@ export default async function handler(req, res) {
       })
     }
 
+    // B1 — text the BROWSER already read off a scan, sent instead of a file.
+    //
+    // The client only takes this path after this very route answered 422
+    // scanned_document on the same PDF, so arriving here means the document
+    // has already been established as image-only. The text comes in as one
+    // string per page — the same shape rfps.pages holds and the same shape
+    // extractPages produces — so everything downstream is identical whether
+    // the characters came from pdf-parse or from OCR.
+    const ocrPages = readOcrPages(rawBody, boundary)
+
+    let sourceText
+    let pageTexts = null
+
+    if (ocrPages) {
+      pageTexts = ocrPages
+      sourceText = cleanText(ocrPages.join('\n\n'))
+
+      console.log(
+        '[analyze] OCR text supplied by client:',
+        ocrPages.length,
+        'page(s),',
+        sourceText.length,
+        'chars'
+      )
+
+      if (!sourceText) {
+        return res.status(422).json({
+          error:
+            'The scanned pages were read, but no text could be recovered from ' +
+            'them. The scan may be too low-resolution, skewed, or handwritten. ' +
+            'Re-scan at a higher DPI, or re-export the file with OCR enabled.',
+          scanned_document: true,
+          ocr_attempted: true,
+          extracted_chars: 0,
+        })
+      }
+    } else {
     const fileBuffer = extractFileFromMultipart(
       rawBody,
       boundary
@@ -4303,7 +4403,7 @@ export default async function handler(req, res) {
 
     const pdfData = await pdfParse(fileBuffer)
     console.log('[analyze] pdf parse took', Date.now() - requestStart, 'ms')
-    const sourceText = cleanText(pdfData.text)
+    sourceText = cleanText(pdfData.text)
 
     // Second, page-tracked parse of the same buffer, purely so the client can
     // persist rfps.pages. The parse above joins every page with the same
@@ -4314,8 +4414,6 @@ export default async function handler(req, res) {
     //
     // Deliberately non-fatal: this is supplementary persistence data, and an
     // analysis that already succeeded should not fail because of it.
-    let pageTexts = null
-
     try {
       const extracted = await extractPages(fileBuffer)
 
@@ -4330,8 +4428,59 @@ export default async function handler(req, res) {
     if (!sourceText) {
       return res.status(400).json({
         error: 'PDF appears to be empty or unreadable',
+        scanned_document: true,
+        extracted_chars: 0,
       })
     }
+
+    // B1 — scanned-document detection.
+    //
+    // A PDF with NO text at all is caught above. The dangerous case is the one
+    // just past it: a scan that carries a cover page, a header, or a stamped
+    // form field yields a few dozen characters, sails through the check, and
+    // produces a confident analysis of almost nothing. That is worse than an
+    // error, because nothing about the result says it was built on air.
+    //
+    // Detection is by density, not total: a 40-page scan with one readable
+    // page is still a scan. Real text PDFs run to hundreds or thousands of
+    // characters per page, so the threshold sits far below any genuine
+    // document and only trips on image-only ones.
+    //
+    // This REPORTS; it does not yet OCR. Rasterising a PDF so it can be OCR'd
+    // needs a renderer this stack does not have — see the note in the B1
+    // section of the session report before wiring one in.
+    const pageCount =
+      Number(pdfData.numpages) ||
+      (Array.isArray(pageTexts) ? pageTexts.length : 0) ||
+      1
+
+    const charsPerPage = sourceText.length / pageCount
+
+    if (charsPerPage < MIN_CHARS_PER_PAGE) {
+      console.warn(
+        '[analyze] scanned document suspected:',
+        sourceText.length,
+        'chars over',
+        pageCount,
+        'page(s) =',
+        Math.round(charsPerPage),
+        'chars/page'
+      )
+
+      return res.status(422).json({
+        error:
+          `This looks like a scanned document. Only ${sourceText.length} ` +
+          `character(s) of text could be read across ${pageCount} page(s), ` +
+          'which is far too little to analyse — the pages are almost ' +
+          'certainly images of text rather than text. Re-export or re-scan ' +
+          'it with OCR enabled, then upload it again.',
+        scanned_document: true,
+        extracted_chars: sourceText.length,
+        pages: pageCount,
+        chars_per_page: Math.round(charsPerPage),
+      })
+    }
+    } // end of the file branch — the OCR branch above skips straight past it
 
     const extraction =
       extractRelevantSections(sourceText)
