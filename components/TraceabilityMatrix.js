@@ -104,8 +104,100 @@ function LinkedCell({ links }) {
   )
 }
 
+/**
+ * Offers a retry when — and only when — some rows failed to classify.
+ *
+ * Costs tokens, so it never fires on its own. Scoped to the failed rows by the
+ * route itself, which selects on classification_error and updates in place, so
+ * pressing this cannot disturb a requirement that already classified.
+ */
+function RetryFailedBanner({ rows, rfpId, onComplete }) {
+  const [running, setRunning] = useState(false)
+  const [notice, setNotice] = useState(null)
+
+  const failed = (rows || []).filter((row) => row?.classification_error)
+
+  if (failed.length === 0 || !rfpId) {
+    return null
+  }
+
+  async function retry() {
+    setRunning(true)
+    setNotice(null)
+
+    try {
+      const response = await fetch('/api/shredder/reclassify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rfp_id: rfpId }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        setNotice({ tone: 'warning', text: payload.error || 'The retry failed.' })
+
+        return
+      }
+
+      setNotice({
+        tone: payload.recovered > 0 ? 'success' : 'warning',
+        text: payload.message,
+      })
+
+      if (payload.recovered > 0 && typeof onComplete === 'function') {
+        onComplete()
+      }
+    } catch (error) {
+      setNotice({ tone: 'warning', text: error?.message || 'Could not reach the retry.' })
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="alert alert-warning m-3 mb-0">
+      <div className="d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+          <strong>
+            {failed.length} requirement{failed.length === 1 ? '' : 's'} could not be
+            classified.
+          </strong>
+          <div className="small mt-1">
+            The extracted text for {failed.length === 1 ? 'it' : 'them'} is intact —
+            only the classification step failed, usually because the AI provider
+            was rate-limited mid-run. Retrying re-attempts just these rows and
+            leaves every classified requirement untouched.
+          </div>
+        </div>
+        <button
+          className="btn btn-sm btn-warning fw-semibold text-nowrap"
+          onClick={retry}
+          disabled={running}
+        >
+          {running ? (
+            <>
+              <span className="spinner-border spinner-border-sm me-2" role="status" />
+              Retrying…
+            </>
+          ) : (
+            `↻ Retry ${failed.length} failed row${failed.length === 1 ? '' : 's'}`
+          )}
+        </button>
+      </div>
+
+      {notice && (
+        <div className={`alert alert-${notice.tone} py-2 mt-3 mb-0 small`}>
+          {notice.text}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RequirementRow({ row }) {
   const [expanded, setExpanded] = useState(false)
+  const [showError, setShowError] = useState(false)
 
   const confidence = Number(row.confidence)
   const hasConfidence = Number.isFinite(confidence)
@@ -131,12 +223,48 @@ function RequirementRow({ row }) {
             </span>
           </div>
         )}
+        {/* The provider's error is a few hundred characters of JSON. Printed
+            in full it swamped this cell and read as though it had REPLACED the
+            requirement — it never did: requirement_text still holds the
+            extracted candidate, and always did. What a reader needs here is
+            the state ("this one was never classified"), with the raw text
+            available on demand for whoever is debugging it. */}
         {row.classification_error && (
-          <div
-            className="text-danger mt-1"
-            style={{ fontSize: '0.7rem', lineHeight: '1.3' }}
-          >
-            {row.classification_error}
+          <div className="mt-1">
+            <span
+              className="badge bg-danger"
+              style={{ fontSize: '0.68rem' }}
+              title={row.classification_error}
+            >
+              ⚠ Not classified
+            </span>
+            <div
+              className="text-danger mt-1"
+              style={{ fontSize: '0.68rem', lineHeight: '1.3' }}
+            >
+              Classification failed — needs retry
+            </div>
+            <button
+              className="btn btn-sm btn-link text-decoration-none p-0 mt-1 text-secondary"
+              style={{ fontSize: '0.68rem' }}
+              onClick={() => setShowError(!showError)}
+            >
+              {showError ? '▲ Hide error' : '⌄ Show error'}
+            </button>
+            {showError && (
+              <div
+                className="text-muted mt-1 p-2 bg-light border rounded"
+                style={{
+                  fontSize: '0.65rem',
+                  lineHeight: '1.3',
+                  maxHeight: 120,
+                  overflowY: 'auto',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {row.classification_error}
+              </div>
+            )}
           </div>
         )}
       </td>
@@ -253,6 +381,12 @@ export default function TraceabilityMatrix({ rows, error, rfpId, onShredded }) {
 
   return (
     <div>
+      {/* A partially-failed shred used to be a dead end: the shred button only
+          renders on an EMPTY rfp (re-running it would append a duplicate REQ
+          set), so there was no way back. This retries the failed rows only —
+          in place, no new rows, no renumbering. */}
+      <RetryFailedBanner rows={all} rfpId={rfpId} onComplete={onShredded} />
+
       {/* Filters + export */}
       <div className="d-flex flex-wrap gap-3 align-items-end px-3 pt-3 pb-3 bg-light border-bottom">
         <div>
