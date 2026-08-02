@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase/client'
@@ -76,6 +76,59 @@ function getBestIndex(entries, getValue, higherIsBetter = true) {
   }
   return bestIdx
 }
+
+// B3 — the full rubric as comparison rows.
+//
+// analyze.js applies a FIXED 27-item checklist to every RFP, so the row basis
+// is read off the analyses themselves rather than duplicated here: whichever
+// entry has a checklist defines the rows, and every other entry is looked up
+// against them by task name. That keeps this page correct if the rubric is
+// ever extended, and keeps it from inventing rows the analysis does not have.
+const RUBRIC_DEPARTMENTS = [
+  { key: 'financial', label: '💰 Financial' },
+  { key: 'legal', label: '⚖️ Legal' },
+  { key: 'operations', label: '⚙️ Operations' },
+  { key: 'technical', label: '💻 Technical' },
+]
+
+/**
+ * @param {Array<object>} entries
+ * @returns {Array<{key: string, label: string, tasks: string[]}>}
+ */
+function buildRubric(entries) {
+  return RUBRIC_DEPARTMENTS.map((dept) => {
+    const tasks = []
+
+    for (const entry of entries) {
+      for (const item of entry?.complianceChecklist?.[dept.key] || []) {
+        const task = String(item?.task || '').trim()
+
+        // Union across entries, first-seen order. Identical in practice —
+        // the rubric is fixed — but a union means one odd analysis cannot
+        // silently drop a row for everybody.
+        if (task && !tasks.includes(task)) tasks.push(task)
+      }
+    }
+
+    return { ...dept, tasks }
+  }).filter((dept) => dept.tasks.length > 0)
+}
+
+/**
+ * One entry's verdict for one task, or null when it has no such item.
+ *
+ * @param {object} entry
+ * @param {string} deptKey
+ * @param {string} task
+ * @returns {object|null}
+ */
+function findRubricItem(entry, deptKey, task) {
+  const items = entry?.complianceChecklist?.[deptKey] || []
+
+  return items.find((item) => String(item?.task || '').trim() === task) || null
+}
+
+const STATUS_BADGE = { GO: 'success', 'NO-GO': 'danger', ESCALATE: 'warning' }
 
 export default function Compare() {
   const router = useRouter()
@@ -209,6 +262,7 @@ export default function Compare() {
   const counts = entries.map(e => getCounts(e.complianceChecklist))
   const decisions = entries.map(e => getDecision(e.complianceChecklist))
   const financials = entries.map(e => getFinancialHighlights(e.complianceChecklist))
+  const rubric = buildRubric(entries)
 
   const bestScoreIdx = getBestIndex(entries, (_, i) => scores[i !== undefined ? i : 0], true)
   const bestGoIdx = getBestIndex(entries.map((_, i) => i), i => counts[i].go, true)
@@ -473,6 +527,114 @@ export default function Compare() {
             </div>
           </div>
         </div>
+
+        {/* B3 — every rubric item, every RFP. The curated highlights above
+            answer "which is better at a glance"; this answers "where exactly
+            do these differ", which is the question that needs all 27 rows. */}
+        {rubric.length > 0 && (
+          <div className="card shadow-sm mb-4">
+            <div className="card-header bg-dark text-white d-flex justify-content-between align-items-center flex-wrap gap-2">
+              <h5 className="mb-0">📋 Full Compliance Rubric</h5>
+              <span className="badge bg-light text-dark">
+                {rubric.reduce((n, d) => n + d.tasks.length, 0)} items ×{' '}
+                {entries.length} RFPs
+              </span>
+            </div>
+            <div className="card-body p-0">
+              <div className="table-responsive">
+                <table className="table table-sm table-bordered mb-0 compare-table">
+                  <thead>
+                    <tr className="table-light">
+                      <th className="compare-label-cell" style={{ minWidth: '190px' }}>
+                        Checklist item
+                      </th>
+                      {entries.map((entry, i) => (
+                        <th key={i} className="compare-value-cell">
+                          {entry.summary?.projectTitle || entry.fileName}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rubric.map((dept) => (
+                      <React.Fragment key={dept.key}>
+                        <tr className="table-secondary">
+                          <td className="compare-label-cell fw-bold">{dept.label}</td>
+                          {entries.map((_, i) => (
+                            <td key={i} className="compare-value-cell" />
+                          ))}
+                        </tr>
+
+                        {dept.tasks.map((task) => {
+                          const items = entries.map((entry) =>
+                            findRubricItem(entry, dept.key, task)
+                          )
+
+                          const statuses = items.map((item) => item?.status || null)
+
+                          // Rows where the RFPs actually differ are the point
+                          // of the table — marked so they can be found without
+                          // reading all 27.
+                          const differs =
+                            new Set(statuses.filter(Boolean)).size > 1
+
+                          return (
+                            <tr key={task}>
+                              <td className="compare-label-cell">
+                                {differs && (
+                                  <span
+                                    className="badge bg-info text-dark me-1"
+                                    style={{ fontSize: '0.6rem' }}
+                                  >
+                                    differs
+                                  </span>
+                                )}
+                                {task}
+                              </td>
+                              {items.map((item, i) => (
+                                <td
+                                  key={i}
+                                  className={`compare-value-cell ${
+                                    item?.status === 'GO'
+                                      ? 'compare-best'
+                                      : item?.status === 'NO-GO'
+                                        ? 'compare-worst'
+                                        : ''
+                                  }`}
+                                >
+                                  {item ? (
+                                    <>
+                                      <span
+                                        className={`badge bg-${STATUS_BADGE[item.status] || 'secondary'} me-1`}
+                                      >
+                                        {item.status}
+                                      </span>
+                                      <div
+                                        style={{
+                                          fontSize: '0.75rem',
+                                          color: '#6c757d',
+                                          marginTop: '4px',
+                                        }}
+                                      >
+                                        {item.reason}
+                                      </div>
+                                    </>
+                                  ) : (
+                                    '—'
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          )
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="card shadow-sm mb-4">
           <div className="card-header bg-primary text-white">

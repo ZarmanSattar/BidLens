@@ -11,6 +11,8 @@ import CompanyFitCard from './CompanyFitCard'
 import CrossFileConflictsCard from './CrossFileConflictsCard'
 import HeadlineNumbers from './HeadlineNumbers'
 import RfpChatCard from './RfpChatCard'
+import CrossCheckCard from './CrossCheckCard'
+import TeamNotes from './TeamNotes'
 import { supabase } from '../lib/supabase/client'
 
 const statusColors = {
@@ -492,7 +494,7 @@ function EvidenceToggle({ text }) {
   )
 }
 
-function DepartmentChecklist({ items }) {
+function DepartmentChecklist({ items, rfpId }) {
   if (!items || items.length === 0) {
     return <p className="text-muted p-4 text-center">No items found.</p>
   }
@@ -529,7 +531,18 @@ function DepartmentChecklist({ items }) {
           <tbody>
             {items.map((item, index) => (
               <tr key={index}>
-                <td className="fw-bold text-dark px-3 py-3">{item.task}</td>
+                <td className="fw-bold text-dark px-3 py-3">
+                  {item.task}
+                  {/* B4 — keyed on the task NAME, which is stable because the
+                      rubric is fixed. A note therefore survives re-analysis of
+                      the same RFP, which a row index would not. */}
+                  <TeamNotes
+                    rfpId={rfpId}
+                    targetKind="checklist"
+                    targetKey={item.task}
+                    label={item.task}
+                  />
+                </td>
                 <td className="text-center px-3 py-3">
                   <span className={`badge bg-${statusColors[item.status] || 'secondary'} px-2 py-2 w-100`}>
                     {statusIcons[item.status]} {item.status}
@@ -762,6 +775,9 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
           question those cards provoke: "where does it say that?". Costs tokens
           per question and never fires on its own. */}
       <RfpChatCard rfpId={rfpId} />
+      {/* B2 — sits after the checklist cards because it audits their verdicts.
+          Opt-in, costs tokens, and writes nothing back. */}
+      <CrossCheckCard rfpId={rfpId} />
       <SummaryCard summary={data.summary} />
 
       {/* RE-STYLED Deliverables */}
@@ -855,6 +871,7 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
           <div className="pt-2">
             <DepartmentChecklist
               items={data.complianceChecklist?.[activeTab]}
+              rfpId={rfpId}
             />
           </div>
         </div>
