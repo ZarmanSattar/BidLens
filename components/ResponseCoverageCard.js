@@ -181,6 +181,66 @@ export default function ResponseCoverageCard({ rfpId }) {
   }
 
   /**
+   * Re-reads the item lists after a draft run.
+   *
+   * /api/response/build reports PROGRESS ONLY — its payload carries numbers
+   * and the skeletons it just produced, and no per-requirement list with the
+   * reqNumber, department, page and text this card renders. Those live solely
+   * in /api/skeletons/coverage, which is why spreading ...previous left the
+   * list frozen at whatever the mount-time load found while the counter above
+   * it moved.
+   *
+   * Re-read rather than patched locally: coverage re-applies the §8.2
+   * staleness rules against the database, so this lands on exactly the state a
+   * page reload would show. Subtracting drafted ids from the list in the
+   * browser would instead trust what the model PRODUCED, and a draft that
+   * generated but failed to save would vanish from the list while still being
+   * genuinely missing — the same lie the progress counter was fixed for.
+   *
+   * Zero tokens: two table reads and arithmetic, the same call the card
+   * already makes on mount.
+   *
+   * Only the list-shaped fields are merged. The counters and `progress` are
+   * left exactly as buildOnce computed them, because the auto-continue loop
+   * makes its stop/continue decision on progress.remaining and must not have
+   * that value changed underneath it mid-run.
+   */
+  async function refreshLists() {
+    try {
+      const response = await fetch('/api/skeletons/coverage', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rfp_id: rfpId }),
+      })
+
+      if (!response.ok) return
+
+      const fresh = await response.json()
+
+      setData((previous) =>
+        previous
+          ? {
+              ...previous,
+              missingItems: fresh.missingItems || [],
+              coveredItems: fresh.coveredItems || [],
+              missingReqNumbers: fresh.missingReqNumbers || [],
+              byDepartment: fresh.byDepartment || previous.byDepartment,
+              byRole: fresh.byRole || previous.byRole,
+              stale: fresh.stale,
+              staleItems: fresh.staleItems || [],
+              generation_available: fresh.generation_available,
+              note: fresh.note,
+            }
+          : previous
+      )
+    } catch {
+      // A stale list is a cosmetic problem; a thrown error mid-run is not.
+      // The next batch refreshes it again, and the counter stays truthful
+      // either way.
+    }
+  }
+
+  /**
    * One call to /api/response/build, normalized into a loop decision.
    *
    * @returns {Promise<object>} `fatal` means stop now — a real failure, not a
@@ -217,6 +277,12 @@ export default function ResponseCoverageCard({ rfpId }) {
             ? 0
             : Math.round((payload.progress.drafted / payload.progress.total) * 100),
       }))
+
+      // Progress moved, so rows moved between the two lists. Refreshed on
+      // every batch rather than once at the end, so the list shortens as the
+      // run proceeds instead of jumping at the finish. Also runs on a 429,
+      // because a rate-limited call still saved whatever landed before it.
+      await refreshLists()
     }
 
     // A 429 is the expected rate-limit stop and IS retryable. Every other
