@@ -23,10 +23,11 @@ const { describeDeadline } = require('../../../utils/deadline')
 // route is the half that can be built and tested now; see the notes at the end
 // of this file for exactly what deploying adds.
 //
-// NO DEDUPLICATION. Nothing records what was already sent, so scheduling this
-// as-is would re-send the same warning every run. The migration that fixes
-// that is described at the bottom of this file and is deliberately NOT applied
-// here.
+// DEDUPLICATED. Every successful send is recorded in notification_log, and an
+// alert already present there is skipped rather than re-sent. The identity of
+// a notification is (rfp_id, kind, threshold_days) — so the 14-, 7-, 3- and
+// 1-day warnings for one RFP each send exactly once, and analysis_complete
+// (which carries no threshold) sends once in total.
 
 const DEFAULT_WITHIN_DAYS = 14
 const DEFAULT_FINISHED_WITHIN_HOURS = 24
@@ -118,6 +119,75 @@ async function sendEmail(message) {
     return { sent: true, error: null }
   } catch (err) {
     return { sent: false, error: err?.message || 'send failed' }
+  }
+}
+
+/**
+ * A threshold as the column stores it: a number, or null for "no step".
+ *
+ * Null and undefined MUST be handled before the numeric conversion, because
+ * `Number(null)` is 0 — a finite number, and a meaningful threshold meaning
+ * "due today". Letting null fall through turned a stored null into 0 and made
+ * an absent value (NaN) key differently from an explicit null, so the same
+ * alert was written one way and looked up another and deduplication silently
+ * missed.
+ *
+ * @param {number|null|undefined} value
+ * @returns {number|null}
+ */
+function normalizeThreshold(value) {
+  if (value === null || value === undefined) {
+    return null
+  }
+
+  const numeric = Number(value)
+
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+/**
+ * The identity of one notification, matching the unique index exactly.
+ *
+ * The index is on (rfp_id, kind, coalesce(threshold_days, -1)), so a null
+ * threshold — which is what analysis_complete carries, because it fires once
+ * rather than at a countdown step — has to collapse to -1 here too. Keying on
+ * a raw null instead would make every analysis_complete look distinct and
+ * defeat the whole point.
+ *
+ * @param {{rfp_id: string, kind: string, threshold_days: number|null|undefined}} alert
+ * @returns {string}
+ */
+function notificationKey(alert) {
+  return `${alert.rfp_id}|${alert.kind}|${normalizeThreshold(alert.threshold_days) ?? -1}`
+}
+
+/**
+ * Everything already sent, for the RFPs in this batch.
+ *
+ * One query rather than one per alert: the batch is bounded by how many RFPs
+ * exist, and a per-alert round trip would make a large check slow for no
+ * reason.
+ *
+ * @param {string[]} rfpIds
+ * @returns {Promise<{sent: Set<string>, error: string|null}>}
+ */
+async function loadAlreadySent(rfpIds) {
+  if (rfpIds.length === 0) {
+    return { sent: new Set(), error: null }
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('notification_log')
+    .select('rfp_id, kind, threshold_days')
+    .in('rfp_id', rfpIds)
+
+  if (error) {
+    return { sent: new Set(), error: error.message }
+  }
+
+  return {
+    sent: new Set((data || []).map((row) => notificationKey(row))),
+    error: null,
   }
 }
 
@@ -239,6 +309,10 @@ export default async function handler(req, res) {
       configured,
       sent: 0,
       failed: 0,
+      // Suppressed because they were sent on an earlier run. Reported
+      // separately from `failed` — nothing went wrong, the work was simply
+      // already done, and a scheduled run will report mostly these.
+      skipped: 0,
       note: wantsSend
         ? configured
           ? null
@@ -246,10 +320,41 @@ export default async function handler(req, res) {
         : 'Dry run. Pass {"send": true} to actually deliver these.',
     }
 
+    // Marked on every alert, dry run included, so a dry run now answers "what
+    // WOULD be sent" rather than "what matches the window" — the two stopped
+    // being the same thing the moment sends became recorded.
+    const { sent: alreadySent, error: logReadError } = await loadAlreadySent([
+      ...new Set(alerts.map((alert) => alert.rfp_id)),
+    ])
+
+    for (const alert of alerts) {
+      alert.already_notified = alreadySent.has(notificationKey(alert))
+    }
+
     if (wantsSend && configured) {
       delivery.attempted = true
 
       for (const alert of alerts) {
+        // A failed read of the log is NOT treated as "nothing was sent". That
+        // assumption would turn one bad query into a duplicate of every alert
+        // in the batch, which is the exact failure this table exists to stop.
+        if (logReadError) {
+          alert.delivery = {
+            sent: false,
+            error: `Could not read notification_log (${logReadError}); skipped rather than risk a duplicate.`,
+          }
+          delivery.skipped += 1
+
+          continue
+        }
+
+        if (alert.already_notified) {
+          alert.delivery = { sent: false, skipped: true, reason: 'already notified' }
+          delivery.skipped += 1
+
+          continue
+        }
+
         if (!alert.email) {
           alert.delivery = { sent: false, error: 'No email address for this owner.' }
           delivery.failed += 1
@@ -265,13 +370,48 @@ export default async function handler(req, res) {
 
         alert.delivery = result
 
-        if (result.sent) delivery.sent += 1
-        else delivery.failed += 1
+        if (result.sent) {
+          delivery.sent += 1
+
+          // Recorded only AFTER the provider accepted it. Logging before the
+          // send would suppress a retry of something that never arrived.
+          //
+          // A failure here is logged and carried in the response, but does not
+          // fail the request: the email is already gone, and reporting the
+          // send as failed would be a lie that invites a manual re-send. The
+          // cost of this branch is a possible duplicate on the next run, which
+          // is strictly better than losing the confirmation.
+          const { error: logWriteError } = await supabaseAdmin
+            .from('notification_log')
+            .insert({
+              rfp_id: alert.rfp_id,
+              owner_id: alert.owner_id,
+              kind: alert.kind,
+              threshold_days: normalizeThreshold(alert.threshold_days),
+            })
+
+          if (logWriteError) {
+            console.error(
+              '[alerts/check] SENT but could not record in notification_log —',
+              `${alert.kind} for ${alert.rfp_id}:`,
+              logWriteError.message,
+              '— this alert may be re-sent on the next run.'
+            )
+
+            alert.delivery = { ...result, logged: false, log_error: logWriteError.message }
+          } else {
+            alert.delivery = { ...result, logged: true }
+          }
+        } else {
+          delivery.failed += 1
+        }
       }
 
-      delivery.note =
-        'No record of these sends was kept — running this again will send them ' +
-        'again. See the notification_log migration note in this file.'
+      delivery.note = logReadError
+        ? `notification_log could not be read (${logReadError}), so nothing was sent this run.`
+        : delivery.sent === 0 && delivery.skipped > 0
+          ? `Nothing new to send — all ${delivery.skipped} alert(s) were already notified on an earlier run.`
+          : `${delivery.sent} sent, ${delivery.skipped} already notified.`
     }
 
     return res.status(200).json({
@@ -284,6 +424,10 @@ export default async function handler(req, res) {
         analysis_complete: alerts.filter((a) => a.kind === 'analysis_complete').length,
         deadline_approaching: alerts.filter((a) => a.kind === 'deadline_approaching').length,
         without_email: alerts.filter((a) => !a.email).length,
+        // How many of the matches above have already gone out. On a scheduled
+        // run this is the number that matters — `total` stops meaning "will be
+        // sent" once sends are recorded.
+        already_notified: alerts.filter((a) => a.already_notified).length,
       },
       delivery,
     })
@@ -306,27 +450,11 @@ export default async function handler(req, res) {
 //      ALERT_EMAIL_FROM      verified sender, e.g. "BidLens <bids@yourdomain>"
 //    Without both, the route stays permanently in dry run.
 //
-// 2. A MIGRATION, before this is ever scheduled:
+//    NOTE: onboarding@resend.dev is Resend's shared sandbox sender and will
+//    only deliver to the Resend account owner's own address — every other
+//    recipient comes back 403. Real delivery needs a verified domain.
 //
-//      create table public.notification_log (
-//        id uuid primary key default gen_random_uuid(),
-//        rfp_id uuid not null references public.rfps(id) on delete cascade,
-//        owner_id uuid not null,
-//        kind text not null check (kind in ('analysis_complete','deadline_approaching')),
-//        -- Which countdown step this was, so 7-day and 3-day both send but
-//        -- neither sends twice. Null for analysis_complete, which fires once.
-//        threshold_days integer,
-//        sent_at timestamptz not null default now()
-//      );
-//
-//      create unique index notification_log_once
-//        on public.notification_log(rfp_id, kind, coalesce(threshold_days, -1));
-//
-//    The route would then skip any alert already present in that table. Until
-//    it exists, scheduling this would email the same person every single run,
-//    which is why the on-demand form is the one built.
-//
-// 3. SCHEDULING, once deployed. In vercel.json:
+// 2. SCHEDULING, once deployed. In vercel.json:
 //
 //      { "crons": [{ "path": "/api/alerts/check", "schedule": "0 13 * * *" }] }
 //
