@@ -91,7 +91,11 @@ export default async function handler(req, res) {
       })
     }
 
-    const coverage = computeCoverage(requirements, current)
+    // libraryById is passed so each covered item's library_entry_ids come back
+    // as titles. The map is already built above for the staleness rules, so
+    // this adds no read. Everything below still spreads `...coverage`
+    // unchanged — the new fields ride along without the route reshaping them.
+    const coverage = computeCoverage(requirements, current, libraryById)
 
     return res.status(200).json({
       rfp_id: rfpId,

@@ -63,11 +63,23 @@ function CoverageBar({ covered, total, percent }) {
   )
 }
 
-export default function ResponseCoverageCard({ rfpId }) {
+/**
+ * @param {object} props
+ * @param {string} props.rfpId
+ * @param {number} [props.refreshToken] Bump to re-read coverage. Coverage is
+ *   counted over the requirement rows the shredder writes, and this card can
+ *   mount before they exist — so without this it kept reporting "nothing to
+ *   respond to yet" after a shred that had just created the work. Same prop
+ *   and same reason as CompanyFitCard's and HeadlineNumbers'. Distinct from
+ *   refreshLists() below, which re-reads after a DRAFT run; a shred is a
+ *   different event and never reached this card at all.
+ */
+export default function ResponseCoverageCard({ rfpId, refreshToken = 0 }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
   const [showAll, setShowAll] = useState(false)
+  const [showAllDrafted, setShowAllDrafted] = useState(false)
 
   // §8.3 generation state. Entirely separate from the zero-token load above:
   // the card renders identically when none of it is touched.
@@ -127,10 +139,16 @@ export default function ResponseCoverageCard({ rfpId }) {
       stopRef.current = true
       clearWaitTimer()
     }
-  }, [rfpId])
+  }, [rfpId, refreshToken])
 
   const missing = data?.missingItems || []
   const visible = showAll ? missing : missing.slice(0, 12)
+
+  // Already fetched by the same /api/skeletons/coverage call the counters come
+  // from — it has always been in this payload and was simply never rendered.
+  // No extra request, and none of these drafts cost a token to display.
+  const drafted = data?.coveredItems || []
+  const visibleDrafted = showAllDrafted ? drafted : drafted.slice(0, 12)
 
   const progress = data?.progress
   const remaining = progress ? progress.remaining : missing.length
@@ -641,6 +659,93 @@ export default function ResponseCoverageCard({ rfpId }) {
                     style={{ fontSize: '0.75rem' }}
                   >
                     {showAll ? '▲ Show fewer' : `▼ Show all ${missing.length}`}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {drafted.length > 0 && (
+              <div className="mt-4">
+                <h6 className="fw-bold text-dark d-flex align-items-center gap-2 flex-wrap">
+                  Drafted responses
+                  <span className="badge bg-light text-dark border">{drafted.length}</span>
+                </h6>
+
+                <div className="text-muted mb-3" style={{ fontSize: '0.78rem' }}>
+                  First drafts to edit, not finished text. Each says what it
+                  drew on — a draft citing nothing was written without support
+                  from the library and will usually contain a placeholder.
+                </div>
+
+                {visibleDrafted.map((entry) => (
+                  <div
+                    key={entry.requirementId}
+                    className="bg-light p-2 rounded mb-2 border border-secondary border-opacity-25"
+                  >
+                    <div className="d-flex gap-2 flex-wrap align-items-center mb-1">
+                      <span className="badge bg-white text-dark border font-monospace">
+                        {entry.reqNumber}
+                      </span>
+                      {entry.department && (
+                        <span className="badge bg-light text-dark border">
+                          {entry.department}
+                        </span>
+                      )}
+                      <span className="badge bg-light text-dark border">
+                        {ROLE_LABEL[entry.role] || entry.role}
+                      </span>
+                      {entry.page && (
+                        <span className="badge bg-light text-dark border">
+                          p.{entry.page}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* The requirement, kept muted and small — the draft below
+                        is what this section exists to show. */}
+                    <div className="text-muted mb-2" style={{ fontSize: '0.76rem' }}>
+                      {entry.text}
+                    </div>
+
+                    <div
+                      className="p-2 bg-white border rounded text-dark"
+                      style={{ fontSize: '0.83rem', lineHeight: '1.6', whiteSpace: 'pre-wrap' }}
+                    >
+                      {entry.content || '(no draft text was stored)'}
+                    </div>
+
+                    <div className="d-flex gap-1 flex-wrap align-items-center mt-2">
+                      <span className="text-muted" style={{ fontSize: '0.7rem' }}>
+                        Drew on
+                      </span>
+                      {entry.libraryEntries?.length > 0 ? (
+                        entry.libraryEntries.map((cited) => (
+                          <span
+                            key={cited.id}
+                            className="badge bg-white text-dark border"
+                            style={{ fontSize: '0.68rem' }}
+                          >
+                            {/* Never the raw id. A null title means the entry
+                                was deleted after this was drafted. */}
+                            {cited.title || 'a deleted library entry'}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-muted fst-italic" style={{ fontSize: '0.7rem' }}>
+                          nothing in the library — written unsupported
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {drafted.length > 12 && (
+                  <button
+                    className="btn btn-sm btn-light border text-secondary fw-semibold"
+                    onClick={() => setShowAllDrafted(!showAllDrafted)}
+                    style={{ fontSize: '0.75rem' }}
+                  >
+                    {showAllDrafted ? '▲ Show fewer' : `▼ Show all ${drafted.length}`}
                   </button>
                 )}
               </div>
