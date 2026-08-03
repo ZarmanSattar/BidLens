@@ -47,11 +47,26 @@ function Stat({ label, value, sub, tone }) {
   )
 }
 
+/**
+ * @param {object} props
+ * @param {string} props.rfpId
+ * @param {number} props.requirementCount
+ * @param {number} props.riskCount
+ * @param {string|null} props.deadlineText
+ * @param {number} [props.refreshToken] Bump to re-read the fit score. The tile
+ *   is derived from `work_requirement` rows, which the shredder writes after
+ *   this strip has already mounted and answered — so without this the tile
+ *   kept its pre-shred value ("—", no requirements found) while the Company
+ *   Fit tab below it, which takes the same token, showed the real score. Two
+ *   readings of one number, disagreeing on the same screen. Same prop and same
+ *   reason as CompanyFitCard's.
+ */
 export default function HeadlineNumbers({
   rfpId,
   requirementCount,
   riskCount,
   deadlineText,
+  refreshToken = 0,
 }) {
   const [fit, setFit] = useState(null)
   const [fitLoading, setFitLoading] = useState(false)
@@ -91,7 +106,7 @@ export default function HeadlineNumbers({
     return () => {
       cancelled = true
     }
-  }, [rfpId])
+  }, [rfpId, refreshToken])
 
   const deadline = describeDeadline(deadlineText)
 

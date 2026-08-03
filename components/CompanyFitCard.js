@@ -234,7 +234,20 @@ function GapRow({ gap }) {
   )
 }
 
-export default function CompanyFitCard({ rfpId }) {
+/**
+ * @param {object} props
+ * @param {string} props.rfpId
+ * @param {number} [props.refreshToken] Bump to force a re-read of the blocker
+ *   check. Needed because this card's inputs can change without `rfpId`
+ *   changing: fit is assessed against `work_requirement` rows, and those are
+ *   written by the shredder AFTER this card has already mounted and answered.
+ *   On the results page the shred button is a sibling of this card, so the
+ *   card kept rendering the pre-shred payload — requirements_total 0, "no work
+ *   requirements to check" — while the traceability matrix beside it showed
+ *   the rows that had just been written. Optional: a caller that mounts after
+ *   the shred (the traceability page) needs no token and passes none.
+ */
+export default function CompanyFitCard({ rfpId, refreshToken = 0 }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -304,7 +317,7 @@ export default function CompanyFitCard({ rfpId }) {
       stopRef.current = true
       clearWaitTimer()
     }
-  }, [rfpId])
+  }, [rfpId, refreshToken])
 
   const fit = data?.fit
   const clearCount = data?.clear_count ?? 0
