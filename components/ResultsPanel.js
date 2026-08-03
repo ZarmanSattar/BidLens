@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
@@ -8,6 +8,7 @@ import TraceabilityMatrix, {
 } from './TraceabilityMatrix'
 import ContractRiskCard from './ContractRiskCard'
 import CompanyFitCard from './CompanyFitCard'
+import ResponseCoverageCard from './ResponseCoverageCard'
 import CrossFileConflictsCard from './CrossFileConflictsCard'
 import HeadlineNumbers from './HeadlineNumbers'
 import RfpChatCard from './RfpChatCard'
@@ -384,12 +385,16 @@ function RiskFlagSummary({ complianceChecklist }) {
 function SummaryCard({ summary }) {
   if (!summary) return null
 
+  // Submission Deadline is intentionally not in this list. HeadlineNumbers
+  // renders the same summary.submissionDeadline string with a live countdown
+  // directly below this card, so a second static copy here was the same fact
+  // stated twice and worse the second time. The exports are unaffected — the
+  // PDF/Excel/JSON writers build their own field lists from summary directly.
   const fields = [
     { label: 'Issuing Agency', value: summary.issuingAgency },
     { label: 'Project Title', value: summary.projectTitle },
     { label: 'RFP Number', value: summary.rfpNumber },
     { label: 'Contract Value', value: summary.contractValue },
-    { label: 'Submission Deadline', value: summary.submissionDeadline },
     { label: 'Project Duration', value: summary.projectDuration },
   ]
 
@@ -418,7 +423,37 @@ function SummaryCard({ summary }) {
   )
 }
 
+// Evaluation Criterion Component
+//
+// One node on the flat criteria spine, using the same .rfp-timeline geometry as
+// the deliverables timeline. Criteria carry their weight inside the string
+// itself ("Experience and References — 25 points"), so the trailing weight is
+// split off for emphasis only — the text rendered is still the full original
+// string, dash included. Anything that doesn't end in a weight renders whole.
+const CRITERION_POINTS = /\s(—\s*[\d.,]+\s*(?:points?|pts?|%|percent))\s*$/i
+
+function CriterionItem({ text, indexStr }) {
+  const match = text.match(CRITERION_POINTS)
+  const label = match ? text.slice(0, match.index) : text
+
+  return (
+    <div className="rfp-timeline-node criteria-node">
+      <span className="rfp-timeline-marker criteria-marker">{indexStr}</span>
+      <span className="criteria-text">
+        {label}
+        {match && <> <span className="criteria-points">{match[1]}</span></>}
+      </span>
+    </div>
+  )
+}
+
 // Smart Parsing Deliverable Component
+//
+// Renders one sub-deliverable as a node on the timeline spine drawn by
+// .deliverable-timeline. The colon split, the title/description halves and the
+// toggle are exactly as they were — only the surrounding element changed from a
+// list-group <li> to a timeline node, because the spine is drawn per node and a
+// list-group-item carries its own borders that cut across it.
 function DeliverableItem({ text, indexStr }) {
   const [isOpen, setIsOpen] = useState(false)
   const colonIndex = text.indexOf(':')
@@ -426,14 +461,14 @@ function DeliverableItem({ text, indexStr }) {
   // If no colon is found, render it as a standard item
   if (colonIndex === -1) {
     return (
-      <li className="list-group-item py-3 px-4 d-flex align-items-start border-0 border-bottom">
-        <span className="text-primary fw-bold me-3 mt-1" style={{ fontSize: '0.85rem' }}>
+      <div className="deliverable-node deliverable-node-child">
+        <span className="deliverable-marker deliverable-marker-child">
           {indexStr}
         </span>
         <span className="text-secondary" style={{ lineHeight: '1.6' }}>
           {text}
         </span>
-      </li>
+      </div>
     )
   }
 
@@ -442,14 +477,14 @@ function DeliverableItem({ text, indexStr }) {
   const description = text.slice(colonIndex + 1).trim()
 
   return (
-    <li className="list-group-item py-3 px-4 d-flex align-items-start border-0 border-bottom">
-      <span className="text-primary fw-bold me-3 mt-1" style={{ fontSize: '0.85rem' }}>
+    <div className="deliverable-node deliverable-node-child">
+      <span className="deliverable-marker deliverable-marker-child">
         {indexStr}
       </span>
       <div className="flex-grow-1">
         <div className="d-flex justify-content-between align-items-center">
           <span className="fw-bold text-dark">{title}</span>
-          <button 
+          <button
             className="btn btn-sm btn-link text-decoration-none text-secondary p-0 ms-3 text-nowrap"
             onClick={() => setIsOpen(!isOpen)}
             style={{ fontSize: '0.8rem' }}
@@ -463,7 +498,7 @@ function DeliverableItem({ text, indexStr }) {
           </div>
         )}
       </div>
-    </li>
+    </div>
   )
 }
 
@@ -575,7 +610,11 @@ function DepartmentChecklist({ items, rfpId }) {
 // The shredder is not part of the analyze flow, so a freshly analyzed RFP has
 // no requirements until /api/shredder/run is called for it. TraceabilityMatrix
 // renders that as its empty state; this card just reports the load.
-function TraceabilityCard({ rfpId }) {
+// `onShredded` is called in addition to this card's own reload, so siblings
+// whose data the shredder also writes can re-read. Without it the signal died
+// here: reloadKey below is local state, so a shred refreshed the matrix and
+// nothing else on the page.
+function TraceabilityCard({ rfpId, onShredded }) {
   const [rows, setRows] = useState([])
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -684,7 +723,10 @@ function TraceabilityCard({ rfpId }) {
             rows={rows}
             error={error}
             rfpId={rfpId}
-            onShredded={() => setReloadKey((key) => key + 1)}
+            onShredded={() => {
+              setReloadKey((key) => key + 1)
+              onShredded?.()
+            }}
           />
         )}
       </div>
@@ -694,6 +736,12 @@ function TraceabilityCard({ rfpId }) {
 
 export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }) {
   const [activeTab, setActiveTab] = useState('financial')
+
+  // Bumped when the shredder finishes writing this RFP's requirement rows.
+  // Held here rather than inside TraceabilityCard because the shred is not
+  // that card's private event: Company Fit is assessed against the same rows
+  // and mounted before they existed, so it has to be told they now do.
+  const [shredKey, setShredKey] = useState(0)
 
   // A2 — the same count the Risk Flag Summary renders below, computed once
   // here and handed to both rather than counted twice from the same list.
@@ -720,6 +768,52 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
     { key: 'technical', label: '💻 Technical' },
   ]
 
+  // ── Requirement-level sections ──────────────────────────
+  //
+  // Company Fit, Response Coverage and the Traceability Matrix all answer
+  // questions about the SHREDDED REQUIREMENTS rather than about the analysis
+  // object, so they are grouped behind one tab strip instead of stacked among
+  // the checklist cards. Nothing inside the three components changed — this is
+  // a wrapper, and each still renders its own card, header and outbound link.
+  // Order follows the work: what the document asks for, then whether this
+  // company can meet it, then how much of the answer is written. This array is
+  // the only place tab order is defined — the panes below render in whatever
+  // order the strip declares.
+  const sections = [
+    { key: 'traceability', label: '🔗 Traceability Matrix', accent: 'dark' },
+    { key: 'fit', label: '🏢 Company Fit', accent: 'primary' },
+    { key: 'coverage', label: '✍️ Response Coverage', accent: 'info' },
+  ]
+
+  const [activeSection, setActiveSection] = useState('fit')
+
+  // Response Coverage is the one section this page did not previously carry,
+  // and its card POSTs to /api/skeletons/coverage the moment it mounts. Gating
+  // the mount on a first click keeps a results page that never opens the tab
+  // exactly as cheap to load as it was before the tab strip existed.
+  const [coverageOpened, setCoverageOpened] = useState(false)
+
+  const sectionTabsRef = useRef(null)
+
+  function selectSection(key) {
+    if (key === 'coverage') {
+      setCoverageOpened(true)
+    }
+
+    setActiveSection(key)
+
+    // The three panes differ enormously in height — an expanded Response
+    // Coverage or a long matrix is many screens, Company Fit is one. Switching
+    // from a tall pane to a short one can therefore leave the viewport parked
+    // below all remaining content. Only corrects the case where the strip has
+    // already scrolled off the top; a tab clicked in view is left alone.
+    const strip = sectionTabsRef.current
+
+    if (strip && strip.getBoundingClientRect().top < 0) {
+      strip.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+
   return (
     <div className="mt-4">
 
@@ -745,15 +839,31 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
         </button>
       </div>
 
-      {/* A2 — the four numbers first, before any card. Every value here is
-          already computed elsewhere on this page; the strip reads them rather
-          than deriving its own. */}
+      {/* Identity before numbers: which RFP this is has to be settled before
+          any figure about it means anything. The submission deadline is
+          deliberately absent from this card — the strip immediately below
+          carries the same date with a countdown, and showing it twice invites
+          the two copies to disagree. */}
+      <SummaryCard summary={data.summary} />
+
+      {/* A2 — the four numbers first, before any analysis card. Every value
+          here is already computed elsewhere on this page; the strip reads them
+          rather than deriving its own. Sole owner of the deadline on screen. */}
       <HeadlineNumbers
         rfpId={rfpId}
         requirementCount={headlineRequirementCount}
         riskCount={headlineRiskCount}
         deadlineText={data.summary?.submissionDeadline || null}
+        // Same signal the Company Fit tab takes, so the two readings of the
+        // fit score cannot drift apart after a shred.
+        refreshToken={shredKey}
       />
+
+      {/* A1 — directly under the strip rather than below the analysis cards.
+          The question it answers ("where does it say that?") is the one a
+          reader arrives with, so it should not have to be scrolled to. Still
+          costs tokens per question and still never fires on its own. */}
+      <RfpChatCard rfpId={rfpId} />
 
       <BidScoreCard complianceChecklist={data.complianceChecklist} />
       <RiskFlagSummary complianceChecklist={data.complianceChecklist} />
@@ -761,54 +871,111 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
           two answer adjacent questions: that one is the AI compliance verdict,
           this one is what pattern-matching found in the contract terms. */}
       <ContractRiskCard rfpId={rfpId} />
-      {/* Company Fit (§6.4) — follows Contract Risk because it answers the
-          next question in the same sequence: that card says what the contract
-          asks of any bidder, this one says what it asks of THIS company. */}
-      <CompanyFitCard rfpId={rfpId} />
+      {/* Requirement sections (§6.4 / §8.4 / §4.5) — one tab strip in the slot
+          Company Fit used to hold alone, which keeps the Contract Risk →
+          Company Fit sequence intact: that card says what the contract asks of
+          any bidder, the first tab here says what it asks of THIS company. The
+          Traceability Matrix moved up from the bottom of the page to join it.
+
+          Panes are hidden with Bootstrap's own .tab-pane CSS rather than
+          unmounted, because CompanyFitCard runs an auto-judge loop and
+          ResponseCoverageCard a draft-generation loop — unmounting an inactive
+          tab would kill a run in progress. */}
+      <div className="mb-4" ref={sectionTabsRef}>
+        <ul className="nav nav-tabs" role="tablist">
+          {sections.map((section) => (
+            <li className="nav-item" key={section.key} role="presentation">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeSection === section.key}
+                className={`nav-link fw-semibold ${
+                  activeSection === section.key
+                    ? `active text-${section.accent}`
+                    : 'text-muted'
+                }`}
+                onClick={() => selectSection(section.key)}
+              >
+                {section.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        <div className="tab-content pt-3">
+          <div
+            className={`tab-pane fade ${
+              activeSection === 'traceability' ? 'show active' : ''
+            }`}
+            role="tabpanel"
+          >
+            <TraceabilityCard
+              rfpId={rfpId}
+              onShredded={() => setShredKey((key) => key + 1)}
+            />
+          </div>
+
+          <div
+            className={`tab-pane fade ${
+              activeSection === 'fit' ? 'show active' : ''
+            }`}
+            role="tabpanel"
+          >
+            <CompanyFitCard rfpId={rfpId} refreshToken={shredKey} />
+          </div>
+
+          <div
+            className={`tab-pane fade ${
+              activeSection === 'coverage' ? 'show active' : ''
+            }`}
+            role="tabpanel"
+          >
+            {/* Still gated on a first click — the reorder must not turn this
+                into a card that POSTs on every results-page load. */}
+            {coverageOpened ? (
+              <ResponseCoverageCard rfpId={rfpId} refreshToken={shredKey} />
+            ) : null}
+          </div>
+        </div>
+      </div>
       {/* Cross-File Consistency (§7.2) — last of the three zero-token cards,
           because it is the only one that asks about the package rather than
           the contract. It hides itself entirely unless this RFP was uploaded
           with attachments, so a single-file analysis looks exactly as it did
           before. */}
       <CrossFileConflictsCard rfpId={rfpId} hideWhenNothingToCompare />
-      {/* A1 — sits directly under the analysis cards because it answers the
-          question those cards provoke: "where does it say that?". Costs tokens
-          per question and never fires on its own. */}
-      <RfpChatCard rfpId={rfpId} />
       {/* B2 — sits after the checklist cards because it audits their verdicts.
-          Opt-in, costs tokens, and writes nothing back. */}
+          Opt-in, costs tokens, and writes nothing back. Unmoved; it is one slot
+          higher only because Ask this RFP left the position above it. */}
       <CrossCheckCard rfpId={rfpId} />
-      <SummaryCard summary={data.summary} />
 
       {/* RE-STYLED Deliverables */}
       <div className="card mb-4 shadow-sm border-0">
         <div className="card-header bg-transparent border-bottom">
           <h5 className="mb-0 fw-bold text-primary">📦 Project Deliverables</h5>
         </div>
-        <div className="card-body bg-light p-4 rounded-bottom">
+        <div className="card-body p-4 rounded-bottom">
           {data.deliverables && data.deliverables.length > 0 ? (
-            <div className="row g-4">
+            <div className="deliverable-timeline">
               {data.deliverables.map((group, gIndex) => (
-                <div key={gIndex} className="col-12">
-                  <div className="card border shadow-sm h-100">
-                    <div className="card-header bg-white border-bottom py-3">
-                      <h6 className="fw-bold text-dark mb-0 d-flex align-items-center">
-                        <span className="badge bg-primary me-2 rounded-pill">{gIndex + 1}</span> 
-                        {group.parent}
-                      </h6>
-                    </div>
-                    {group.children && group.children.length > 0 && (
-                      <ul className="list-group list-group-flush">
-                        {group.children.map((child, cIndex) => (
-                          <DeliverableItem 
-                            key={cIndex} 
-                            text={child} 
-                            indexStr={`${gIndex + 1}.${cIndex + 1}`} 
-                          />
-                        ))}
-                      </ul>
-                    )}
+                <div key={gIndex} className="deliverable-group">
+                  <div className="deliverable-node deliverable-node-parent">
+                    <span className="deliverable-marker deliverable-marker-parent">
+                      {gIndex + 1}
+                    </span>
+                    <span className="deliverable-parent-title">{group.parent}</span>
                   </div>
+                  {group.children && group.children.length > 0 && (
+                    <div className="deliverable-children">
+                      {group.children.map((child, cIndex) => (
+                        <DeliverableItem
+                          key={cIndex}
+                          text={child}
+                          indexStr={`${gIndex + 1}.${cIndex + 1}`}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -826,16 +993,13 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
         <div className="card-header bg-transparent border-bottom">
           <h5 className="mb-0 fw-bold text-info">📊 Evaluation Criteria</h5>
         </div>
-        <div className="card-body bg-white p-0">
+        <div className="card-body bg-white p-4 rounded-bottom">
           {data.evaluationCriteria && data.evaluationCriteria.length > 0 ? (
-            <ul className="list-group list-group-flush">
+            <div className="rfp-timeline criteria-timeline">
               {data.evaluationCriteria.map((item, index) => (
-                <li key={index} className="list-group-item py-3 px-4 text-secondary d-flex align-items-center">
-                  <span className="badge bg-info text-dark rounded-circle me-3 py-2 px-2">{index + 1}</span>
-                  <span className="fw-semibold">{item}</span>
-                </li>
+                <CriterionItem key={index} text={item} indexStr={`${index + 1}`} />
               ))}
-            </ul>
+            </div>
           ) : (
             <div className="text-center py-5 text-muted">
               No explicit evaluation criteria found.
@@ -876,9 +1040,6 @@ export default function ResultsPanel({ data, rfpId, onExportPDF, onExportExcel }
           </div>
         </div>
       </div>
-
-      {/* Traceability Matrix (§4.5) */}
-      <TraceabilityCard rfpId={rfpId} />
 
     </div>
   )

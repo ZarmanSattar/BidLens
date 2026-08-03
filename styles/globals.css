@@ -218,6 +218,290 @@ body {
   color: #6c757d;
 }
 
+/* Timeline spine + numbered markers — on-screen results panel only.
+ *
+ * Shared by the Deliverables timeline (nested parent/child) and the Evaluation
+ * Criteria timeline (flat). The geometry below is the reusable part and is
+ * written once; each section then supplies its own marker sizes/colours and its
+ * own first/last segment stops, because those depend on that section's nesting.
+ * The `.deliverable-*` names are kept as co-selectors so the Deliverables
+ * markup did not have to change.
+ *
+ * The spine is drawn per node rather than once on the container so the first
+ * and last segments can stop at their own marker's centre. A single
+ * container-height line cannot do that: the distance from the last node's
+ * bottom edge to its marker moves every time a "View Details" body expands, so
+ * a fixed `bottom` would leave a stub dangling under the final circle.
+ *
+ * Every offset below is tied to a marker height (32 / 26) — changing a marker
+ * size means changing its `top` and the first/last segment lengths, while
+ * SPINE_X stays put. Kept as literal px rather than custom properties to match
+ * the rest of this file.
+ */
+.rfp-timeline,
+.deliverable-timeline {
+  position: relative;
+  padding-left: 52px;
+}
+
+.rfp-timeline-node,
+.deliverable-node {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+/* The spine segment. left: -35px puts it at 17px from the timeline's own left
+ * edge (52 - 35), so the 2px line centres on 18px — the same axis the markers
+ * are translated onto below. */
+.rfp-timeline-node::before,
+.deliverable-node::before {
+  content: '';
+  position: absolute;
+  left: -35px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: rgba(13, 110, 253, 0.25);
+}
+
+/* First segment starts at the first parent marker's centre (20 top + 16 half),
+ * last segment ends at the final marker's centre — parent 36, child 25. */
+.deliverable-group:first-child > .deliverable-node-parent::before {
+  top: 36px;
+}
+
+.deliverable-group:last-child > .deliverable-node-parent:last-child::before {
+  bottom: auto;
+  height: 36px;
+}
+
+.deliverable-group:last-child
+  > .deliverable-children
+  > .deliverable-node:last-child::before {
+  bottom: auto;
+  height: 25px;
+}
+
+/* Row padding is what makes the spine legible: the markers plus their white
+ * rings occupy ~32-38px of each row's height, so anything tighter than this
+ * leaves only a few pixels of visible line and the spine reads as detached
+ * stubs between circles rather than one continuous run. */
+.deliverable-node-parent {
+  padding: 20px 0 8px;
+}
+
+.deliverable-node-child {
+  padding: 12px 0;
+}
+
+.deliverable-parent-title {
+  font-weight: 700;
+  color: #212529;
+  font-size: 1.02rem;
+  line-height: 1.5;
+  padding-top: 3px;
+}
+
+.rfp-timeline-marker,
+.deliverable-marker {
+  position: absolute;
+  left: -35px;
+  transform: translateX(calc(-50% + 1px));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  /* Opaque fill plus a white ring so the spine reads as passing behind the
+   * marker rather than through it. Requires the white card body. Kept at 3px —
+   * wider swallows the line between adjacent rows. */
+  box-shadow: 0 0 0 3px #ffffff;
+}
+
+.deliverable-marker-parent {
+  top: 20px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 9px;
+  background-color: #0d6efd;
+  color: #ffffff;
+  font-size: 0.85rem;
+}
+
+.deliverable-marker-child {
+  top: 12px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  background-color: #ffffff;
+  color: #0d6efd;
+  border: 2px solid #0d6efd;
+  font-size: 0.68rem;
+}
+
+/* Evaluation Criteria timeline — same spine/marker pattern as Deliverables, but
+ * a single flat run of nodes (this data has no parent/child nesting) and the
+ * section's own info accent so the two cards stay distinguishable.
+ *
+ * Marker centre is 30px (14px row padding + 16px half of a 32px marker), so the
+ * first segment starts there and the last segment stops there. */
+.criteria-node {
+  padding: 14px 0;
+}
+
+/* The darker cyan rather than a tint of the #0dcaf0 marker fill: at 2px, a tint
+ * that light reads noticeably fainter than the deliverables spine next to it,
+ * which defeats the point of matching the two sections. */
+.criteria-node::before {
+  background-color: rgba(8, 121, 144, 0.3);
+}
+
+.criteria-timeline > .criteria-node:first-child::before {
+  top: 30px;
+}
+
+.criteria-timeline > .criteria-node:last-child::before {
+  bottom: auto;
+  height: 30px;
+}
+
+.criteria-marker {
+  top: 14px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 9px;
+  background-color: #0dcaf0;
+  color: #055160;
+  font-size: 0.85rem;
+}
+
+.criteria-text {
+  font-weight: 600;
+  color: #212529;
+  line-height: 1.5;
+  padding-top: 5px;
+}
+
+/* The points value carried in the criterion string, kept visually distinct so
+ * it reads as a weight rather than as part of the label. */
+.criteria-points {
+  font-weight: 700;
+  color: #087990;
+  white-space: nowrap;
+}
+
+/* Ask this RFP — chat bubbles, suggestion chips, explainer tooltip */
+.rfp-bubble {
+  max-width: 85%;
+  padding: 9px 14px;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+/* The corner nearest the speaker is squared off so the pair reads as a
+ * conversation rather than two unrelated rounded boxes. */
+.rfp-bubble-user {
+  background-color: #0d6efd;
+  color: #ffffff;
+  border-radius: 14px 14px 4px 14px;
+}
+
+.rfp-bubble-bot {
+  background-color: #ffffff;
+  border: 1px solid #dee2e6;
+  border-radius: 14px 14px 14px 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+/* "Not stated in the document" is a real answer, not an error — warm border
+ * only, no alert colouring on the body. */
+.rfp-bubble-notfound {
+  border-color: rgba(255, 193, 7, 0.65);
+  background-color: #fffdf5;
+}
+
+.rfp-chip {
+  border: 1px solid #cfe2ff;
+  background-color: #ffffff;
+  color: #0d6efd;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.rfp-chip:hover:not(:disabled) {
+  background-color: #e8f0fe;
+  border-color: #0d6efd;
+}
+
+.rfp-chip:focus-visible {
+  outline: none;
+  border-color: #0d6efd;
+  box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.25);
+}
+
+.rfp-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.rfp-infotip {
+  position: relative;
+  display: inline-flex;
+}
+
+.rfp-infotip-button {
+  border: none;
+  background: none;
+  padding: 0;
+  line-height: 1;
+  font-size: 0.95rem;
+  color: #6c757d;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.rfp-infotip-button:hover,
+.rfp-infotip-button[aria-expanded='true'] {
+  color: #0d6efd;
+}
+
+.rfp-infotip-button:focus-visible {
+  outline: none;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.35);
+}
+
+.rfp-infotip-bubble {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 1050;
+  width: 320px;
+  max-width: 78vw;
+  background-color: #ffffff;
+  border: 1px solid #dee2e6;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+  padding: 12px 14px;
+  font-size: 0.8rem;
+  font-weight: 400;
+  line-height: 1.6;
+  color: #495057;
+  white-space: normal;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 /* Risk Flag Summary */
 .risk-item {
   display: flex;
@@ -234,12 +518,30 @@ body {
 
 .risk-dept-badge {
   font-size: 0.7rem;
+  font-weight: 700;
   padding: 2px 7px;
   border-radius: 4px;
   background-color: #e9ecef;
   color: #495057;
   white-space: nowrap;
   margin-top: 2px;
+}
+
+/*
+ * These tags get their background from a Bootstrap .bg-* utility, which lands
+ * with !important and so replaces the light default above — but the colour
+ * beside it does not, leaving the default #495057 sitting on a solid dark fill
+ * (1.8:1 on bg-danger). Restate the text colour per background so the tags read
+ * the way the .badge counts in the same card header already do: white on the
+ * dark fills, 700 weight throughout.
+ *
+ * bg-warning is deliberately absent. Bootstrap's .text-dark is already applied
+ * at every yellow call site and wins on !important regardless of what is
+ * written here; near-black on #ffc107 is ~11:1 and only ever needed the weight.
+ */
+.risk-dept-badge.bg-danger,
+.risk-dept-badge.bg-secondary {
+  color: #ffffff;
 }
 
 /* Deadline Tracker */
@@ -307,6 +609,92 @@ body {
 
 .compare-worst {
   background-color: #fff5f5;
+}
+
+/* Navbar account avatar + dropdown */
+.user-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.user-menu-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background-color: #0d6efd;
+  color: #ffffff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.user-menu-avatar:hover {
+  background-color: #0b5ed7;
+}
+
+.user-menu-avatar:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.45);
+}
+
+.user-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 1050;
+  min-width: 240px;
+  max-width: 280px;
+  background-color: #ffffff;
+  border: 1px solid #dee2e6;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  padding: 18px 16px 16px;
+}
+
+.user-menu-identity {
+  text-align: center;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+/* Larger echo of .user-menu-avatar so the card reads as the same account. */
+.user-menu-avatar-large {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 10px;
+  border-radius: 50%;
+  background-color: #0d6efd;
+  color: #ffffff;
+  font-size: 1.4rem;
+  font-weight: 600;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(13, 110, 253, 0.28);
+}
+
+.user-menu-name {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #212529;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.user-menu-email {
+  font-size: 0.8rem;
+  color: #6c757d;
+  margin-top: 2px;
+  word-break: break-all;
 }
 
 /* Checkbox in dashboard table */

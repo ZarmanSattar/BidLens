@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import ResultsPanel from '../components/ResultsPanel'
+import UserMenu from '../components/UserMenu'
 import { supabase } from '../lib/supabase/client'
 import { formatDate } from '../utils/formatDate'
 import { getDaysRemaining } from '../utils/deadline'
@@ -361,7 +362,6 @@ export default function Dashboard() {
           Bid<span style={{ color: '#0d6efd' }}>Lens</span>
         </span>
         <div className="d-flex align-items-center gap-3">
-          <span className="text-secondary small">{session?.user?.email}</span>
           <Link href="/" className="btn btn-primary btn-sm">
             🔍 New Analysis
           </Link>
@@ -374,7 +374,7 @@ export default function Dashboard() {
           <Link href="/amendments" className="btn btn-outline-light btn-sm">
             📑 Amendments
           </Link>
-          <button className="btn btn-outline-light btn-sm" onClick={handleSignOut}>Sign out</button>
+          <UserMenu session={session} onSignOut={handleSignOut} />
         </div>
       </nav>
 

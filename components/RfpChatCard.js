@@ -28,16 +28,68 @@ function formatTokens(value) {
   return value >= 1000 ? `~${Math.round(value / 1000)}k` : `~${value}`
 }
 
+// The explainer that used to sit in a permanent grey alert above the thread.
+// Same words, collapsed behind an icon: it is read once and then it is in the
+// way, but it is the only place the grounding rule and the per-question cost
+// are stated, so it is kept rather than dropped.
+function InfoTip({ children }) {
+  const [open, setOpen] = useState(false)
+  const wrapperRef = useRef(null)
+  const buttonRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+
+    function handlePointerDown(event) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+        setOpen(false)
+      }
+    }
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        buttonRef.current?.focus()
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('touchstart', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('touchstart', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  return (
+    // Click rather than hover: a hover-only tooltip is unreachable on touch,
+    // which is where the space this saves matters most.
+    <span className="rfp-infotip" ref={wrapperRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="rfp-infotip-button"
+        aria-expanded={open}
+        aria-label="How answers to these questions work"
+        onClick={() => setOpen((value) => !value)}
+      >
+        ⓘ
+      </button>
+      {open && (
+        <span className="rfp-infotip-bubble" role="note">
+          {children}
+        </span>
+      )}
+    </span>
+  )
+}
+
 function Bubble({ turn }) {
   if (turn.role === 'user') {
     return (
       <div className="d-flex justify-content-end mb-2">
-        <div
-          className="bg-primary text-white rounded px-3 py-2"
-          style={{ maxWidth: '85%', fontSize: '0.88rem' }}
-        >
-          {turn.text}
-        </div>
+        <div className="rfp-bubble rfp-bubble-user">{turn.text}</div>
       </div>
     )
   }
@@ -47,10 +99,9 @@ function Bubble({ turn }) {
   return (
     <div className="d-flex justify-content-start mb-3">
       <div
-        className={`rounded px-3 py-2 border ${
-          notFound ? 'bg-light border-warning border-opacity-50' : 'bg-light'
+        className={`rfp-bubble rfp-bubble-bot${
+          notFound ? ' rfp-bubble-notfound' : ''
         }`}
-        style={{ maxWidth: '85%', fontSize: '0.88rem' }}
       >
         <div className="text-dark" style={{ whiteSpace: 'pre-wrap' }}>
           {turn.text}
@@ -151,24 +202,28 @@ export default function RfpChatCard({ rfpId }) {
   return (
     <div className="card mb-4 shadow-sm border-0">
       <div className="card-header bg-transparent border-bottom d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <h5 className="mb-0 fw-bold text-primary">💬 Ask this RFP</h5>
+        <h5 className="mb-0 fw-bold text-primary d-flex align-items-center gap-2">
+          💬 Ask this RFP
+          <InfoTip>
+            Answers come only from this document&apos;s stored text, with the
+            page numbers they were read from. If the document does not say, the
+            answer will say that rather than guess. Each question is a separate
+            AI call costing roughly{' '}
+            <strong>{formatTokens(EST_TOKENS_PER_QUESTION)} tokens</strong> —
+            nothing is sent until you press Ask.
+            <br />
+            <br />
+            Questions are matched to the most relevant pages first, so the whole
+            document is not re-read (and re-charged) every time. Answers are not
+            legal advice and are not a substitute for reading the cited pages.
+          </InfoTip>
+        </h5>
         <span className="badge bg-light text-dark border">
           {formatTokens(EST_TOKENS_PER_QUESTION)} tokens / question
         </span>
       </div>
 
       <div className="card-body">
-        {turns.length === 0 && (
-          <div className="alert alert-secondary py-2" style={{ fontSize: '0.85rem' }}>
-            Answers come only from this document's stored text, with the page
-            numbers they were read from. If the document does not say, the
-            answer will say that rather than guess. Each question is a separate
-            AI call costing roughly{' '}
-            <strong>{formatTokens(EST_TOKENS_PER_QUESTION)} tokens</strong> —
-            nothing is sent until you press Ask.
-          </div>
-        )}
-
         {turns.length > 0 && (
           <div
             ref={threadRef}
@@ -219,12 +274,12 @@ export default function RfpChatCard({ rfpId }) {
         </div>
 
         {turns.length === 0 && (
-          <div className="mt-2 d-flex flex-wrap gap-1">
+          <div className="mt-2 d-flex flex-wrap gap-2">
             {SUGGESTIONS.map((suggestion) => (
               <button
                 key={suggestion}
-                className="btn btn-sm btn-outline-secondary"
-                style={{ fontSize: '0.75rem' }}
+                type="button"
+                className="rfp-chip"
                 disabled={asking}
                 onClick={() => ask(suggestion)}
               >
@@ -234,26 +289,22 @@ export default function RfpChatCard({ rfpId }) {
           </div>
         )}
 
-        <div
-          className="text-muted mt-3 pt-3 border-top"
-          style={{ fontSize: '0.78rem', lineHeight: '1.6' }}
-        >
-          {lastAnswer?.total > 0 ? (
-            <>
-              The last question searched {lastAnswer.searched} of{' '}
-              {lastAnswer.total} pages, chosen by keyword match — so a fact
-              buried in wording unlike your question can be missed. Ask again
-              using the document's own terms if an answer looks thin.
-            </>
-          ) : (
-            <>
-              Questions are matched to the most relevant pages first, so the
-              whole document is not re-read (and re-charged) every time. Answers
-              are not legal advice and are not a substitute for reading the
-              cited pages.
-            </>
-          )}
-        </div>
+        {/* Only the live half of the old footnote stays on the page. The static
+            half moved into the header tooltip; this variant is a fact about the
+            answer just given, not an explainer, so it has nowhere else to go —
+            and it costs no space until there is an answer to describe. */}
+        {lastAnswer?.total > 0 && (
+          <div
+            className="text-muted mt-3 pt-3 border-top"
+            style={{ fontSize: '0.78rem', lineHeight: '1.6' }}
+          >
+            The last question searched {lastAnswer.searched} of{' '}
+            {lastAnswer.total}{' '}
+            pages, chosen by keyword match — so a fact buried
+            in wording unlike your question can be missed. Ask again using the
+            document&apos;s own terms if an answer looks thin.
+          </div>
+        )}
       </div>
     </div>
   )
