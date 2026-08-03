@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import CrossFileConflictsCard from '../components/CrossFileConflictsCard'
-import { formatDate } from '../utils/formatDate'
+import { formatDate, formatDateTime } from '../utils/formatDate'
 
 // §7.3/§7.4 — the amendment comparison view.
 //
@@ -32,6 +32,89 @@ export async function getServerSideProps({ query }) {
       loadError: error ? error.message : null,
     },
   }
+}
+
+/**
+ * "3 days ago" for recent uploads, null for anything older or unparseable.
+ *
+ * Only ever called after mount — see AmendmentPicker.
+ */
+function relativeDays(value) {
+  const then = new Date(value).getTime()
+
+  if (!Number.isFinite(then)) return null
+
+  const days = Math.floor((Date.now() - then) / 86400000)
+
+  // A future timestamp means a clock disagreement, not a real date; fall back
+  // to the absolute one rather than rendering "-2 days ago".
+  if (days < 0 || days > 30) return null
+  if (days === 0) return 'today'
+  if (days === 1) return 'yesterday'
+
+  return `${days} days ago`
+}
+
+/** Every row in this table is a PDF today; derived rather than assumed. */
+function fileIcon(title) {
+  return /\.pdf$/i.test(String(title || '')) ? '📕' : '📄'
+}
+
+/**
+ * The amendment file picker.
+ *
+ * Each card is a <Link>, so clicking it navigates exactly where the old
+ * inline link did. Styled with .btn so hover, :focus-visible ring and
+ * keyboard activation all come from Bootstrap rather than new CSS — this view
+ * did not need a palette of its own, and .file-info-name is the filename
+ * treatment the upload zone already uses.
+ */
+function AmendmentPicker({ rfps }) {
+  // Relative labels depend on "now", and the server and the browser do not
+  // agree on it — rendering one during SSR is precisely the hydration
+  // mismatch utils/formatDate exists to prevent. So the absolute date ships
+  // from the server and the relative label replaces it after mount. That also
+  // avoids the flash of missing content a useEffect-only date would cause.
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  return (
+    <div className="row row-cols-1 row-cols-sm-2 row-cols-xl-3 g-2 mt-1">
+      {rfps.map((rfp) => {
+        const relative = mounted ? relativeDays(rfp.created_at) : null
+
+        return (
+          <div className="col" key={rfp.id}>
+            <Link
+              href={`/amendments?rfp_id=${rfp.id}`}
+              className="btn btn-light border w-100 h-100 text-start d-flex gap-2 align-items-start p-3"
+              // Three uploads of the same filename on the same day are
+              // indistinguishable at date granularity, so the exact time is
+              // available without spending a line on it.
+              title={`Uploaded ${formatDateTime(rfp.created_at)}`}
+              style={{ whiteSpace: 'normal' }}
+            >
+              <span aria-hidden="true" style={{ fontSize: '1.3rem', lineHeight: 1.1 }}>
+                {fileIcon(rfp.title)}
+              </span>
+              <span className="flex-grow-1" style={{ minWidth: 0 }}>
+                <span className="file-info-name d-block">{rfp.title}</span>
+                <span
+                  className="badge bg-white text-secondary border fw-normal mt-2"
+                  style={{ fontSize: '0.7rem' }}
+                >
+                  uploaded {relative || formatDate(rfp.created_at)}
+                </span>
+              </span>
+            </Link>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 const CHANGE_STYLE = {
@@ -254,16 +337,7 @@ export default function AmendmentsPage({ rfpId, rfps, loadError }) {
                 <div className="mt-3 mb-1 small fw-semibold text-uppercase text-muted">
                   Choose the amendment (newest first)
                 </div>
-                <ul className="mb-0 ps-3">
-                  {rfps.map((rfp) => (
-                    <li key={rfp.id}>
-                      <Link href={`/amendments?rfp_id=${rfp.id}`}>{rfp.title}</Link>{' '}
-                      <span className="text-muted small">
-                        · uploaded {formatDate(rfp.created_at)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+                <AmendmentPicker rfps={rfps} />
               </>
             )}
           </div>
