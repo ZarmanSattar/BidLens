@@ -1,11 +1,187 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/router'
 import ResultsPanel from '../components/ResultsPanel'
-import UserMenu from '../components/UserMenu'
 import { supabase } from '../lib/supabase/client'
+import { PLACEHOLDER_OWNER_ID } from '../lib/placeholderOwner'
 import { formatDate } from '../utils/formatDate'
 import { getDaysRemaining } from '../utils/deadline'
+
+// ── PDF evidence rendering ────────────────────────────────
+//
+// Evidence is sliced out of the raw extracted document text, so a quote that
+// spans a page break swallows the source PDF's own page furniture along with
+// it — "...in the past five (5) years, Page 10 of 21 comparable to Old
+// Dominion University in size..." is a real string in a stored ODU analysis.
+//
+// This strips it at render time only. The artifact is in the STORED evidence,
+// which means the on-screen Evidence column shows it too; fixing that belongs
+// upstream in the extraction, not here. Stripping downstream is safe on its
+// own terms — a genuine requirement never reads "Page 10 of 21" — so the
+// filter runs regardless of where the text originated.
+const PAGE_FURNITURE = /\[?\(?\s*\bpages?\s+\d+\s*(?:of|\/)\s*\d+\s*\)?\]?/gi
+
+// Long enough to carry the quote that justifies a decision, short enough that
+// one row does not eat a landscape page. Cells above this are cut at a
+// sentence boundary; the full text stays in the Excel and JSON exports.
+const EVIDENCE_MAX_CHARS = 650
+
+// Below this, evidence is a placeholder or a fragment ("Not specified in RFP"
+// is 20 chars and repeats constantly). Collapsing those into a back-reference
+// would be less readable than just repeating them.
+const EVIDENCE_DEDUPE_MIN_CHARS = 60
+
+function stripPageFurniture(value) {
+  return String(value || '')
+    .replace(PAGE_FURNITURE, ' ')
+    // Removal leaves a double space, and can strand a space before the
+    // punctuation that followed the footer.
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:])/g, '$1')
+    .trim()
+}
+
+/**
+ * Cuts `text` to at most `limit` characters, preferring the last sentence
+ * boundary inside the budget so a cell never ends mid-word or mid-clause.
+ *
+ * Falls back to the last word boundary when the first sentence alone already
+ * overruns the budget — some RFP paragraphs run 400 characters without a full
+ * stop, and a word break still beats a character break.
+ *
+ * The ellipsis is appended only when something was actually removed.
+ *
+ * @param {string} value
+ * @param {number} [limit]
+ * @returns {string}
+ */
+function truncateAtSentence(value, limit = EVIDENCE_MAX_CHARS) {
+  const text = String(value || '').trim()
+
+  if (text.length <= limit) return text
+
+  const window = text.slice(0, limit)
+
+  let cut = -1
+  const boundary = /[.!?]["'’)\]]?(?=\s|$)/g
+  let match
+
+  while ((match = boundary.exec(window)) !== null) {
+    cut = match.index + match[0].length
+  }
+
+  // Require the sentence break to keep a useful share of the budget, otherwise
+  // a stray "No. 3" early in the text would truncate the cell to nothing.
+  if (cut > limit * 0.4) {
+    return `${text.slice(0, cut).trim()} ...`
+  }
+
+  const space = window.lastIndexOf(' ')
+
+  return `${(space > 0 ? window.slice(0, space) : window).trim()} ...`
+}
+
+/**
+ * Builds the body rows for one department's compliance table.
+ *
+ * The same evidence quote is genuinely stored against several checklist rows —
+ * in the demo_rfp analyses, operations/"Document Compliance" and
+ * operations/"Vendor Registration" hold byte-identical strings. Printing it
+ * twice at full length wastes half a page and reads like two findings where
+ * there is one, so repeats within a table become a back-reference.
+ *
+ * @param {Array<object>} items
+ * @returns {Array<Array<string>>}
+ */
+function buildComplianceRows(items) {
+  const seen = new Map()
+
+  return items.map((item) => {
+    const cleaned = stripPageFurniture(item.evidence)
+
+    let evidence = cleaned
+
+    if (cleaned.length >= EVIDENCE_DEDUPE_MIN_CHARS && seen.has(cleaned)) {
+      evidence = `(same evidence as "${seen.get(cleaned)}" above)`
+    } else {
+      if (cleaned.length >= EVIDENCE_DEDUPE_MIN_CHARS) seen.set(cleaned, item.task)
+      evidence = truncateAtSentence(cleaned)
+    }
+
+    return [item.task, item.status, item.reason || '', evidence]
+  })
+}
+
+// Readable text on each fill rather than the badge colours the screen uses —
+// white-on-amber is unreadable in print and survives photocopying worse.
+const DECISION_CELL_STYLES = {
+  'GO': { fillColor: [209, 231, 221], textColor: [11, 74, 45] },
+  'ESCALATE': { fillColor: [255, 243, 205], textColor: [102, 77, 3] },
+  'NO-GO': { fillColor: [248, 215, 218], textColor: [132, 32, 41] },
+}
+
+function colorDecisionCell(hook) {
+  if (hook.section !== 'body' || hook.column.index !== 1) return
+
+  const style = DECISION_CELL_STYLES[String(hook.cell.raw || '').trim().toUpperCase()]
+
+  if (!style) return
+
+  hook.cell.styles.fillColor = style.fillColor
+  hook.cell.styles.textColor = style.textColor
+  hook.cell.styles.fontStyle = 'bold'
+}
+
+/**
+ * The four numbers the dashboard row already shows, repeated at the top of the
+ * report so the first page answers "should we bid" without being read through.
+ *
+ * Reuses getCounts/getBidScore — the same functions that produce the on-screen
+ * figures, so the PDF cannot disagree with the table it was exported from.
+ *
+ * @returns {number} The y coordinate to continue drawing at.
+ */
+function drawHeadlineStats(doc, results, pageWidth, top) {
+  const counts = getCounts(results.complianceChecklist)
+  const score = getBidScore(results.complianceChecklist)
+  const total = counts.go + counts.noGo + counts.escalate
+
+  const scoreColor = score >= 80 ? [25, 135, 84] : score >= 60 ? [133, 100, 4] : [220, 53, 69]
+
+  const tiles = [
+    { label: 'Requirements reviewed', value: String(total), color: [13, 110, 253] },
+    { label: 'NO-GO items', value: String(counts.noGo), color: [220, 53, 69] },
+    { label: 'Escalations', value: String(counts.escalate), color: [133, 100, 4] },
+    { label: 'Bid score', value: `${score} / 100`, color: scoreColor },
+  ]
+
+  const margin = 14
+  const gap = 5
+  const width = (pageWidth - margin * 2 - gap * (tiles.length - 1)) / tiles.length
+  const height = 20
+
+  tiles.forEach((tile, index) => {
+    const x = margin + index * (width + gap)
+
+    doc.setFillColor(248, 249, 250)
+    doc.setDrawColor(222, 226, 230)
+    doc.roundedRect(x, top, width, height, 2, 2, 'FD')
+
+    // A colour bar rather than a coloured fill: the number stays legible and
+    // the tile still reads at a glance.
+    doc.setFillColor(...tile.color)
+    doc.rect(x, top, 2, height, 'F')
+
+    doc.setFontSize(14)
+    doc.setTextColor(...tile.color)
+    doc.text(tile.value, x + 7, top + 10)
+
+    doc.setFontSize(8)
+    doc.setTextColor(108, 117, 125)
+    doc.text(tile.label, x + 7, top + 16)
+  })
+
+  return top + height
+}
 
 function exportToPDF(results) {
   import('jspdf').then(({ default: jsPDF }) => {
@@ -15,12 +191,15 @@ function exportToPDF(results) {
       doc.setFontSize(20)
       doc.setTextColor(13, 110, 253)
       doc.text('BidLens — RFP Analysis Report', pageWidth / 2, 18, { align: 'center' })
+
+      const afterStats = drawHeadlineStats(doc, results, pageWidth, 24)
+
       if (results.summary) {
         doc.setFontSize(13)
         doc.setTextColor(33, 37, 41)
-        doc.text('RFP Summary', 14, 30)
+        doc.text('RFP Summary', 14, afterStats + 10)
         autoTable(doc, {
-          startY: 34,
+          startY: afterStats + 14,
           head: [['Field', 'Value']],
           body: [
             ['Issuing Agency', results.summary.issuingAgency || 'N/A'],
@@ -48,7 +227,7 @@ function exportToPDF(results) {
         })
       }
 
-      const afterSummary = doc.lastAutoTable ? doc.lastAutoTable.finalY + 8 : 34
+      const afterSummary = doc.lastAutoTable ? doc.lastAutoTable.finalY + 8 : afterStats + 14
       doc.setFontSize(13)
       doc.setTextColor(33, 37, 41)
       doc.text('Deliverables', 14, afterSummary)
@@ -92,16 +271,22 @@ function exportToPDF(results) {
         autoTable(doc, {
           startY: startY + 4,
           head: [['Checklist Item', 'Decision', 'Reason', 'Evidence from RFP']],
-          body: items.map(item => [item.task, item.status, item.reason || '', item.evidence || '']),
+          body: buildComplianceRows(items),
           theme: 'grid',
           headStyles: { fillColor: dept.color },
-          styles: { fontSize: 8, cellPadding: 3 },
+          styles: { fontSize: 8, cellPadding: 3, overflow: 'linebreak', valign: 'top' },
+          // 46/24/78/118 = 266mm of the 269mm a landscape page leaves between
+          // the default margins. Evidence keeps the widest column now that it
+          // is capped, but Reason gets 78 rather than being matched 100/100
+          // against untruncated evidence — that pairing is what wrapped a
+          // two-line reason next to a forty-line quote.
           columnStyles: {
-            0: { cellWidth: 40 },
-            1: { cellWidth: 22, halign: 'center' },
-            2: { cellWidth: 100 },
-            3: { cellWidth: 100 },
+            0: { cellWidth: 46 },
+            1: { cellWidth: 24, halign: 'center' },
+            2: { cellWidth: 78 },
+            3: { cellWidth: 118 },
           },
+          didParseCell: colorDecisionCell,
         })
       }
 
@@ -226,9 +411,6 @@ function getBidScore(complianceChecklist) {
 // top of this file — behaviour is unchanged, there is just one copy now.
 
 export default function Dashboard() {
-  const router = useRouter()
-  const [session, setSession] = useState(null)
-  const [checkingSession, setCheckingSession] = useState(true)
   const [history, setHistory] = useState([])
   const [historyLoading, setHistoryLoading] = useState(true)
   const [dbError, setDbError] = useState(null)
@@ -236,27 +418,6 @@ export default function Dashboard() {
   const [selectedIds, setSelectedIds] = useState([])
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) {
-        router.push('/login')
-      } else {
-        setSession(data.session)
-        setCheckingSession(false)
-      }
-    })
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      if (!newSession) {
-        router.push('/login')
-      } else {
-        setSession(newSession)
-      }
-    })
-    return () => listener.subscription.unsubscribe()
-  }, [router])
-
-  useEffect(() => {
-    if (!session) return
-
     async function loadHistory() {
       setHistoryLoading(true)
       const { data, error } = await supabase
@@ -287,11 +448,7 @@ export default function Dashboard() {
     }
 
     loadHistory()
-  }, [session])
-
-  async function handleSignOut() {
-    await supabase.auth.signOut()
-  }
+  }, [])
 
   async function handleDelete(id) {
     const entry = history.find(e => e.id === id)
@@ -318,7 +475,7 @@ export default function Dashboard() {
       const { error } = await supabase
         .from('rfps')
         .delete()
-        .eq('owner_id', session.user.id)
+        .eq('owner_id', PLACEHOLDER_OWNER_ID)
 
       if (error) {
         setDbError('Failed to clear history: ' + error.message)
@@ -351,10 +508,6 @@ export default function Dashboard() {
     .filter(e => e.daysRemaining !== null)
     .sort((a, b) => a.daysRemaining - b.daysRemaining)
 
-  if (checkingSession) {
-    return <div className="container py-5">Loading...</div>
-  }
-
   return (
     <>
       <nav className="navbar navbar-dark bg-dark px-4">
@@ -374,7 +527,6 @@ export default function Dashboard() {
           <Link href="/amendments" className="btn btn-outline-light btn-sm">
             📑 Amendments
           </Link>
-          <UserMenu session={session} onSignOut={handleSignOut} />
         </div>
       </nav>
 

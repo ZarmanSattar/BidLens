@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/router'
 import { supabase } from '../lib/supabase/client'
 
 function getDecision(complianceChecklist) {
@@ -131,34 +130,12 @@ function findRubricItem(entry, deptKey, task) {
 const STATUS_BADGE = { GO: 'success', 'NO-GO': 'danger', ESCALATE: 'warning' }
 
 export default function Compare() {
-  const router = useRouter()
-  const [session, setSession] = useState(null)
-  const [checkingSession, setCheckingSession] = useState(true)
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) {
-        router.push('/login')
-      } else {
-        setSession(data.session)
-        setCheckingSession(false)
-      }
-    })
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      if (!newSession) {
-        router.push('/login')
-      } else {
-        setSession(newSession)
-      }
-    })
-    return () => listener.subscription.unsubscribe()
-  }, [router])
-
-  useEffect(() => {
-    if (!session || typeof window === 'undefined') return
+    if (typeof window === 'undefined') return
 
     async function loadEntries() {
       const params = new URLSearchParams(window.location.search)
@@ -217,11 +194,7 @@ export default function Compare() {
     }
 
     loadEntries()
-  }, [session])
-
-  if (checkingSession) {
-    return <div className="container py-5">Loading...</div>
-  }
+  }, [])
 
   if (loading) {
     return (

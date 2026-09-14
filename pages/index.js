@@ -1,10 +1,9 @@
-import { useState, useRef, useEffect } from 'react'
-import { useRouter } from 'next/router'
+import { useState, useRef } from 'react'
 import Link from 'next/link'
 import ResultsPanel from '../components/ResultsPanel'
-import UserMenu from '../components/UserMenu'
 import { exportReportPdf } from '../utils/exportReportPdf'
 import { supabase } from '../lib/supabase/client'
+import { PLACEHOLDER_OWNER_ID } from '../lib/placeholderOwner'
 
 function formatFileSize(bytes) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
@@ -61,9 +60,6 @@ function exportToExcel(results) {
 }
 
 export default function Home() {
-  const router = useRouter()
-  const [session, setSession] = useState(null)
-  const [checkingSession, setCheckingSession] = useState(true)
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState(null)
@@ -91,29 +87,6 @@ export default function Home() {
   const resultsRef = useRef(null)
   const toastTimerRef = useRef(null)
   const progressTimerRef = useRef(null)
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) {
-        router.push('/login')
-      } else {
-        setSession(data.session)
-        setCheckingSession(false)
-      }
-    })
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      if (!newSession) {
-        router.push('/login')
-      } else {
-        setSession(newSession)
-      }
-    })
-    return () => listener.subscription.unsubscribe()
-  }, [router])
-
-  async function handleSignOut() {
-    await supabase.auth.signOut()
-  }
 
   function handleFileChange(e) {
     const selected = e.target.files[0]
@@ -441,7 +414,7 @@ export default function Home() {
         const { data: rfpRow, error: rfpError } = await supabase
           .from('rfps')
           .insert({
-            owner_id: session.user.id,
+            owner_id: PLACEHOLDER_OWNER_ID,
             title: file.name,
             original_filename: file.name,
             status: 'analyzed',
@@ -501,7 +474,7 @@ export default function Home() {
             .from('analyses')
             .insert({
               rfp_id: rfpRow.id,
-              owner_id: session.user.id,
+              owner_id: PLACEHOLDER_OWNER_ID,
               result: analysis,
             })
 
@@ -536,10 +509,6 @@ export default function Home() {
     }
   }
 
-  if (checkingSession) {
-    return <div className="container py-5">Loading...</div>
-  }
-
   return (
     <>
       {/* Toast Notification */}
@@ -560,7 +529,6 @@ export default function Home() {
           <Link href="/dashboard" className="btn btn-outline-light btn-sm">📊 Dashboard</Link>
           <Link href="/company-profile" className="btn btn-outline-light btn-sm">🏢 Company Profile</Link>
           <Link href="/content-library" className="btn btn-outline-light btn-sm">📚 Content Library</Link>
-          <UserMenu session={session} onSignOut={handleSignOut} />
         </div>
       </nav>
 

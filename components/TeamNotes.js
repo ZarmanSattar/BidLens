@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase/client'
+import { PLACEHOLDER_OWNER_ID } from '../lib/placeholderOwner'
 
 // B4 — team notes on any checklist item or requirement.
 //
 // ZERO TOKEN COST. Plain rows, no AI anywhere near this.
 //
 // Written through the browser's own Supabase client rather than an API route,
-// matching how rfps and analyses are already inserted: the session is the
-// author, and RLS is what enforces ownership. Routing this through
-// supabaseAdmin would mean trusting a client-supplied author id, which is
-// exactly what the anon key plus a policy avoids.
+// matching how rfps and analyses are already inserted.
+//
+// Authorship used to come from the signed-in session. Login was removed from
+// BidLens, so there is no author to record: every note is written under the
+// placeholder id and displays as "unknown".
 //
 // REQUIRES A MIGRATION THAT IS NOT APPLIED YET. Until public.item_notes
 // exists, every query here fails with PostgREST 42P01 ("relation does not
@@ -63,11 +65,6 @@ export default function TeamNotes({ rfpId, targetKind, targetKey, label }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const [unavailable, setUnavailable] = useState(false)
-  const [session, setSession] = useState(null)
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data?.session || null))
-  }, [])
 
   useEffect(() => {
     if (!rfpId || !targetKey) return
@@ -107,12 +104,6 @@ export default function TeamNotes({ rfpId, targetKind, targetKey, label }) {
 
     if (!body || saving) return
 
-    if (!session?.user) {
-      setError('Sign in to leave a note.')
-
-      return
-    }
-
     setSaving(true)
     setError(null)
 
@@ -123,10 +114,11 @@ export default function TeamNotes({ rfpId, targetKind, targetKey, label }) {
         target_kind: targetKind,
         target_key: targetKey,
         body,
-        author_id: session.user.id,
-        // Denormalized so a note still says who wrote it without a join to
-        // auth.users, which the anon key cannot read.
-        author_email: session.user.email || null,
+        author_id: PLACEHOLDER_OWNER_ID,
+        // Used to say who wrote the note. With login removed there is no
+        // address to record, so notes render as "unknown" rather than
+        // attributing every one of them to the same stub identity.
+        author_email: null,
       })
       .select('id, body, author_email, created_at')
       .single()
@@ -142,18 +134,6 @@ export default function TeamNotes({ rfpId, targetKind, targetKey, label }) {
 
     setNotes((previous) => [...previous, data])
     setDraft('')
-  }
-
-  async function remove(id) {
-    const { error: deleteError } = await supabase.from('item_notes').delete().eq('id', id)
-
-    if (deleteError) {
-      setError(deleteError.message)
-
-      return
-    }
-
-    setNotes((previous) => previous.filter((note) => note.id !== id))
   }
 
   if (unavailable) {
@@ -196,15 +176,6 @@ export default function TeamNotes({ rfpId, targetKind, targetKey, label }) {
                 <div className="text-dark" style={{ whiteSpace: 'pre-wrap' }}>
                   {note.body}
                 </div>
-                {session?.user?.email === note.author_email && (
-                  <button
-                    className="btn btn-sm btn-link text-danger p-0"
-                    style={{ fontSize: '0.7rem' }}
-                    onClick={() => remove(note.id)}
-                  >
-                    delete
-                  </button>
-                )}
               </div>
               <div className="text-muted" style={{ fontSize: '0.7rem' }}>
                 {note.author_email || 'unknown'} · {timeAgo(note.created_at)}
